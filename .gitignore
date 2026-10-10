@@ -1,0 +1,11 @@
+# 本机运行状态和记录，都含隐私，不要提交
+state.json
+counter.log
+duration-fetch.log
+*.log
+
+# durations.json 里是「视频 ID -> 秒数」，那一串 ID 就是你的观看记录，同样不要提交
+durations.json
+
+# YouTube Data API 密钥，绝对不要提交
+yt-api-key.txt

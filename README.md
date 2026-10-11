@@ -1,232 +1,281 @@
-# 视频标签页计数器
+# Video Tab Counter
 
-Chrome 会告诉你现在开着几个标签页，但不会告诉你**昨天看了多少个视频、一共看了多久**。
-这个小工具把这件事变成 Windows 托盘上的一个数字。
+**English** ｜ [简体中文](README.zh-CN.md)
 
-版本 1.0 ｜ MIT 许可（见 [LICENSE](LICENSE)）｜ 个人自用工具，不保证适配你的环境
+Chrome tells you how many tabs are open right now, but not **how many videos you finished yesterday, or how long they were**.
+This little tool turns that into a single number in the Windows system tray.
+
+![Details panel (today)](docs/screenshot-today.png)
+
+**Illustration only: the numbers in the screenshot are sample data, not anyone's actual usage.**
+
+**Who it's for**: anyone who watches tutorials and technical videos in Chrome and wants to know how many they finished and how long that took.
+
+**Why keep it in the tray**
+
+- **Entirely local**: what you watched and for how long stay on this machine; only looking up video lengths goes online.
+- **No admin rights, no runtime, no execution-policy changes**: double-click the launcher and it runs.
+- **One number is enough**: the tray icon shows how many video tabs are open, and hovering gives today's and yesterday's counts and lengths.
+- It reads the tab strip every 5 seconds and uses 100–150 MB of memory.
+
+Version 1.0 ｜ MIT license (see [LICENSE](LICENSE)) ｜ A personal tool; no promise it fits your setup
 
 ---
 
-## 它长什么样
+## What it looks like
 
-- **图标**：蓝色圆圈，里面是现在开着的视频标签页数量。三位数以内直接显示，超过显示 999。
-- **鼠标悬停**会弹出四行：第一行是标题，第二行是现在开着的数量，
-  第三行是今天看完的数量和这些视频的合计时长，第四行是昨天的同样内容。
-  某一天没有可统计的时长时，那一行就只显示数量。
-- **右键菜单**：
+- **Icon**: a blue circle showing how many video tabs are open. Up to three digits are drawn directly; anything above shows 999.
+  ![Icon](docs/icon.png)
+- **Hovering** shows four lines: the title, how many are open now, how many were finished today and their total length,
+  and the same for yesterday. When a day has no known durations, that line shows the count only.
+  ![Tray icon and hover tooltip](docs/tray-tooltip.png)
 
-| 菜单项 | 作用 |
+- **Right-click menu**:
+
+| Item | What it does |
 | --- | --- |
-| 明细 | 从右下角弹出一张面板，点别的地方自动收起 |
-| 立即刷新 | 马上再读一次（不弹窗） |
-| 打开计数文件夹 | 打开本工具所在的文件夹 |
-| 退出 | 结束程序 |
+| Details | Pops up a panel from the bottom-right; clicking elsewhere dismisses it |
+| Refresh now | Reads again immediately (no popup) |
+| Open data folder | Opens the folder the tool lives in |
+| Exit | Quits |
 
-托盘图标左键单击就能打开明细，已经开着的时候再点它不会有反应（不会闪一下又弹出来）；要收起就点面板外面，或者点右上角的叉。右键菜单里是同一套功能。
+A left click on the tray icon also opens the details panel; clicking again while it is already open does nothing
+(it will not flash and pop again). To dismiss it, click outside the panel or hit the × in its top-right corner.
+The right-click menu offers the same actions.
 
-### 明细面板
+### The details panel
 
-打开就是一张图，不用读文字：
+It is meant to be read as a picture, not as text:
 
-- 左上角三个标签切换**今天 / 昨天 / 近 7 天**，默认是今天。
-- 中间一行大字是这段时间看完的视频总时长，下面小字写共几个、有几个时长未知、现在开着几个。
-- 然后是**看的视频**清单：每条一行，标题后面一条横条按时长比例画，右边是这条的时长。
-- 最下面是**近 7 天**每天一根竖条，条高是那天的合计时长，今天那根是深色的。这排柱子只在「近 7 天」这一栏才有；鼠标停在某一根上，它会高亮并显示那天的日期和时长。
+- Three tabs at the top switch between **Today / Yesterday / Last 7 days**; Today is the default.
+- The big number in the middle is the total length of the videos finished in that period. The small line under it
+  shows how many, how many have unknown durations, and how many are open right now.
+- Then the **finished videos** list: one row each, with the title, a bar drawn in proportion to its length, and the length on the right.
+  When the list does not fit, a scrollbar appears on the right; the mouse wheel and dragging it both scroll.
+- At the bottom, **Last 7 days** draws one bar per day, its height being that day's total. Only the "Last 7 days" tab
+  shows this strip; hovering a bar highlights it and shows the date and length above it.
 
-## 装之前需要什么
+![Last 7 days](docs/screenshot-week.png)
 
-- Windows 10 或 11（自带 PowerShell 5.1 和 .NET Framework，所以不用装运行库）
-- 装了 Chrome，并且平时用 Chrome 看视频
-- 不需要管理员权限，不需要改 PowerShell 执行策略
-- 数量和时间全部本地完成；只有「视频时长」那一项要联网
+![Open right now](docs/screenshot-open.png)
 
-## 怎么装
+## Requirements
 
-1. **先解压、再解锁**，这一步别跳。
-   - 不要在压缩包窗口里直接双击运行，那样会解到临时目录，路径全乱。先把整个文件夹解压到硬盘上。
-   - 从网上下载来的文件，Windows 会标记来源，不解锁的话双击会弹「Windows 已保护你的电脑」。
-     做法：进到文件夹，全选所有文件 → 右键 → 属性 → 底下如果有「解除锁定」，勾上、确定。
-     所有文件都做一遍，不用管哪个是 `.vbs` 哪个是 `.ps1`。
-   - 如果没有「解除锁定」这一项却仍然被拦：弹窗里点「更多信息」，再点「仍要运行」。
-   - Win11 默认不显示扩展名，文件夹里看到的是 `start-counter` 而不是 `start-counter.vbs`。
-     想看清扩展名：资源管理器 → 查看 → 显示 → 文件扩展名。
+- Windows 10 or 11 (PowerShell 5.1 and .NET Framework are built in, so there is no runtime to install)
+- Chrome installed, and you actually watch videos in it
+- No administrator rights, no change to the PowerShell execution policy
+- Counts and durations are computed entirely on your machine; only *looking up video lengths* goes online
 
-2. 把整个 `video-tab-counter` 文件夹放到一个固定位置，比如 `D:\tools\video-tab-counter`。
-   路径不敏感，中文和空格都行。**但必须是能写的目录**——别放在「Program Files」这类要管理员权限的
-   地方，它要在自己这个文件夹里写记录和日志。
+## Installation
 
-   位置尽量定下来。挪动之后程序本身还能跑，但第 5 步的自启快捷方式会失效
-   （症状是下次开机图标不出现），把启动文件夹里那个快捷方式删掉重建即可。
+1. **Unblock the files before running them** — do not skip this.
+   - Do not run it straight from the zip viewer; that extracts to a temp folder and every path gets mangled.
+     Extract the whole folder to disk first.
+   - Files downloaded from the internet carry a "from the internet" mark. Without unblocking, double-clicking
+     triggers "Windows protected your PC". Fix: select all files in the folder → right-click → Properties →
+     tick *Unblock* at the bottom → OK. Do this for every file; it does not matter which is `.vbs` and which is `.ps1`.
+   - If there is no *Unblock* checkbox and you are still blocked: click *More info* in the dialog, then *Run anyway*.
+   - Windows 11 hides extensions by default, so you will see `start-counter` instead of `start-counter.vbs`.
+     To show them: Explorer → View → Show → File name extensions.
 
-3. 双击启动器（`start-counter`）。托盘出现图标就算装好，首次启动等一两秒。
+2. Put the whole `video-tab-counter` folder somewhere permanent, for example `D:\tools\video-tab-counter`.
+   The path does not matter — spaces and non-ASCII characters are fine. **But it must be writable**: do not put it under
+   `Program Files` or anywhere that needs administrator rights, because the tool writes its data and logs inside its own folder.
 
-4. 图标没出现或者找不到：
-   - 先点任务栏右下角那个向上的小箭头（∧），那是「隐藏的图标」面板，多半在里面。
-   - 想让它常驻：设置 → 个性化 → 任务栏 → 其他系统托盘图标，把开关打开。
-   - **注意**：Windows 是按程序来记托盘项的，这两个工具都是 PowerShell 跑的，
-     所以在那个列表里它显示成「Windows PowerShell」，不叫「视频标签页计数器」。
-     认它要靠外观：蓝色圆圈里面是数字。
+   Try to settle on a location. Moving the folder later still works, but the autostart shortcut from step 5 breaks
+   (the symptom is that no icon appears after a reboot); delete that shortcut and recreate it.
 
-5. 开机自动跑，两种办法任选一种：
+3. Double-click the launcher (`start-counter`). The icon appearing in the tray means it is installed; give it a second or two.
 
-   **办法 A**：右键启动器 → 发送到 → 桌面快捷方式；按 `Win + R` 输入 `shell:startup` 回车，
-   打开「启动」文件夹；把桌面那个快捷方式剪贴进去。
+4. No icon, or you cannot find it:
+   - Click the little up arrow (∧) at the bottom-right of the taskbar: that is the hidden-icons panel, and it is usually in there.
+   - To keep it visible: Settings → Personalization → Taskbar → Other system tray icons, and turn it on.
+   - **Note**: Windows remembers tray items per program, and both tools run under PowerShell, so it shows up in that list
+     as "Windows PowerShell", not "Video Tab Counter". Recognise it by its look: a blue circle with a number.
 
-   **办法 B**：在「启动」文件夹里右键 → 新建 → 快捷方式，位置填下面这行
-   （路径换成你实际的，引号要留着，路径有空格时尤其需要）：
+5. To start it automatically at logon, pick either way:
+
+   **Way A**: right-click the launcher → Send to → Desktop (create shortcut); press `Win + R`, type `shell:startup`,
+   press Enter, and paste the shortcut into that Startup folder.
+
+   **Way B**: in the Startup folder, right-click → New → Shortcut, and use this as the location
+   (replace the path with yours; keep the quotes, especially if the path has spaces):
 
    ```
    wscript.exe "D:\tools\video-tab-counter\start-counter.vbs"
    ```
 
-### 桌面图标
+### Desktop icon
 
-桌面快捷方式默认显示的是 Windows 脚本的图标，三个工具长得一样，认不出来。
-想让它们跟托盘那个圆点一致：右键快捷方式 → 属性 → 更改图标 → 选本文件夹里的 `icon.ico`。
+A shortcut to a script shows the generic Windows script icon by default, and all three tools look identical.
+To make it match the tray dot: right-click the shortcut → Properties → Change Icon → pick `icon.ico` in this folder.
 
-## 怎么用
+## Usage
 
-- 平时不用管，它每 5 秒看一次 Chrome 的标签栏。
-- 想看细节就右键图标点「明细」。
-- 同一时间只会跑一个：重复双击，多出来的那个会自己退出。
-- 占内存大约 100 到 150 兆。
+- Leave it alone; it reads Chrome's tab strip every 5 seconds.
+- For details, right-click the icon and choose *Details*.
+- Only one instance runs at a time: double-clicking again makes the extra one exit by itself.
+- It uses roughly 100–150 MB of memory.
 
-## 什么算「看完」（这个数怎么来的）
+## Under the hood
 
-- 一个视频算「看完」，是指它曾经出现在标签栏里、后来又不在里面了：
-  要么你把标签关掉了，要么播放列表往后走到了下一个。
-- 但它得**被看到至少 10 秒**才算一次。点开一个、发现点错了、马上叉掉，这种不记。
-- 它每 5 秒扫一次标签栏，所以「看到多久」是按这个粒度量的：10 秒相当于至少跨过两次扫描。
-- 归到哪一天，看的是它**离开标签页的那一刻**，不是打开的时刻。
-- 同一个视频看两遍只算一个，判定依据是标题：「今天」里重复看不重复计，「近 7 天」里跨天重复看
-  也不重复计，时长同样只算一次。YouTube 中途改过标题的话会被当成两个，这是已知的粗糙之处。
-- 「现在开着」是当前还开着的视频标签页数量。
-- 「今天」按你本机的零点切换。
-- 合计时长的算法就一句：那天看完的这些视频，各自有多长，加起来。
-  它记的是视频本身的长度，跟你在页面上停留了多久没有关系，也拿不到那个数据。
-- 注意别把两个数看混：「现在开着」是当前标签页的个数，「今天看完」「昨天看完」
-  才是离开标签页的那些，合计时长只累加后两者。本地会提前把见过的视频时长存下来当缓存，
-  但那只是缓存，不进合计。
-- 支持统计时长的目前只有 YouTube。B 站等站点的视频会算进数量，但拿不到时长，
-  明细里标成「时长未知」，不计进合计；等时长取回来会自动补上。
+- **Live data comes from UI Automation**, reading Chrome's tab strip directly. It does not touch Chrome's session files
+  (the readable one is a snapshot from startup, and the live one is locked while Chrome runs).
+  A full read of the tab strip measures 46–64 ms, which is why the poll interval is 5 seconds.
+- **Video lengths come from the official YouTube Data API v3** (`videos.list`): up to 50 video IDs per request,
+  the first request takes 2–3 seconds to connect and the rest take a bit over 100 ms and return about 8 KB.
+  A length, once fetched, is cached forever and never re-fetched.
+- **State is written to a temp file and then swapped in**; if it cannot be read, the remains are kept, a line goes into the log,
+  and the previous backup is restored — it is never treated as a first run.
+- The tray icon and the details panel are drawn at runtime, with no image assets; it sits at roughly 100–150 MB of memory.
 
-## 第一次装完会看到什么
+## What counts as "finished" (where the number comes from)
 
-今天和昨天都从零开始数，刚装上时两个数都是 0。「昨天看完」要等第二天才会有数。这不是坏了。
+- A video counts as finished when it *used to be* in the tab strip and is *no longer* there: either you closed the tab,
+  or the playlist moved on to the next item.
+- It has to have been **seen for at least 10 seconds** to count once. Opening it, realising it was a misclick and closing it
+  immediately does not count.
+- It scans the tab strip every 5 seconds, so "how long it was seen" is measured at that granularity:
+  10 seconds means at least two scans.
+- Which day it counts towards is the moment it **left the tab strip**, not when it was opened.
+- The same video watched twice counts once; the title decides that. Re-watching within one day does not double count,
+  and in "Last 7 days" watching it again on another day does not either; its length is counted once too.
+  If YouTube changed the title in between, it will look like two videos — a known rough edge.
+- "Open right now" is the number of video tabs currently open.
+- "Today" switches at your machine's midnight.
+- The total is one sentence: for the videos finished that day, add up how long each video is.
+  It records the video's own length; it has nothing to do with how long you stayed on the page, and that data is not available anyway.
+- Do not confuse the two numbers: "open right now" counts current tabs, while "finished today"/"finished yesterday" are the ones
+  that left the tab strip. Only the latter are added into the total length. Seen videos are cached locally with their lengths,
+  but that is only a cache and never counted on its own.
+- Only YouTube currently provides durations. Videos on other sites still count towards the quantity, but have no length:
+  the panel marks them "unknown length" and leaves them out of the total. Once a length is fetched it is filled in automatically.
 
-没配密钥时，提示里没有「共 X 小时 Y 分」那半句，只有数量。
+## What you will see after a fresh install
 
-## 重置
+Today and yesterday start from zero, so both are 0 at first. "Finished yesterday" only gets a number on the second day.
+That is not a bug.
 
-右键退出，删掉 `state.json`，再重新启动，计数就从头开始。
-时长缓存 `durations.json` 可以留着，不用重取。
+Without an API key, the tooltip simply omits the "X hours Y minutes" part and shows the count only.
 
-## 想要时长统计（可选，需要联网）
+## Reset
 
-不配也能用，只是没有时长和合计。断网也只是合计里少几个，数量照常统计。
+Right-click → Exit, delete `state.json`, start again, and counting restarts from zero.
+The duration cache `durations.json` can stay; there is no need to fetch it again.
 
-1. 打开 Google Cloud 控制台，新建一个项目
-2. 左边「API 和服务」→「库」，搜 YouTube Data API v3，点「启用」
-3. 「API 和服务」→「凭据」→「创建凭据」→「API 密钥」
-4. 建议给密钥加限制：选「限制密钥」，只勾 YouTube Data API v3，保存
-5. 存成密钥文件，这一步最容易翻车：
-   - 记事本打开，粘贴那串以 `AIza` 开头的字符串，不要引号、不要多空行
-   - 另存为时「保存类型」一定选「所有文件」，文件名填 `yt-api-key.txt`。
-     如果保存类型是「文本文档」，Windows 会自动补成 `yt-api-key.txt.txt`，程序就找不到
-   - 文件放在 `video-tab-counter` 文件夹里，和 `counter.ps1` 并排
+## Optional: video durations (needs internet)
 
-怎么确认生效：等五到十分钟，右键「明细」看时长出来没有。
+It works without this; you just get no durations or totals. Being offline only drops a few videos from the total —
+the counts keep working.
 
-这个工具只把视频 ID 和你的密钥发给 YouTube，不发任何本地信息。
-一次能问 50 个视频，这个额度对个人使用来说用不完。
+1. Open the Google Cloud console and create a project.
+2. On the left, "APIs & Services" → "Library", search for YouTube Data API v3, click Enable.
+3. "APIs & Services" → "Credentials" → "Create credentials" → "API key".
+4. It is worth restricting the key: choose "Restrict key", tick only YouTube Data API v3, and save.
+5. Save it as a key file — this is the step where things most often go wrong:
+   - Open Notepad, paste the string starting with `AIza`. No quotes, no extra blank lines.
+   - When saving, set "Save as type" to *All files* and the file name to `yt-api-key.txt`.
+     If you leave it as "Text Documents", Windows silently appends .txt and the tool will not find it.
+   - Put the file in the `video-tab-counter` folder, next to `counter.ps1`.
 
-## 常见故障对照
+To check it worked: wait five to ten minutes, then right-click → *Details* and see whether lengths appear.
 
-**图标不见了**
-先点任务栏的 ∧ 看隐藏面板；再检查 设置 → 个性化 → 任务栏 → 其他系统托盘图标
-（里面显示成 Windows PowerShell）。
+The tool only sends the video IDs and your key to YouTube. It sends nothing else about your machine.
+One request covers up to 50 videos, which is far more than personal use needs.
 
-**数字一直不动**
-Chrome 没开的时候本来就定格，重新打开 Chrome 会继续。
-Chrome 开着还不动：右键「立即刷新」；再不行看下面的日志。
+## Troubleshooting
 
-**开机后图标不出现，以前是好的**
-多半是挪过文件夹，自启快捷方式失效了，删掉重建。
+**The icon is gone**
+Click the ∧ arrow on the taskbar to check the hidden-icons panel; then check Settings → Personalization → Taskbar →
+Other system tray icons (it appears there as Windows PowerShell).
 
-**双击启动器没反应**
-先按第 1 步做解除锁定；再看杀毒软件是不是拦了 `.vbs`。
-手动跑一次：开始菜单搜 PowerShell 打开，粘贴下面这行回车，看有没有红字
-（执行策略要显式带上，直接右键「使用 PowerShell 运行」会因为策略被拦）：
+**The numbers never move**
+That is expected while Chrome is closed; it resumes when Chrome comes back. If Chrome is running and it still does not move:
+right-click → *Refresh now*. If that fails, look at the logs below.
+
+**The icon stopped appearing at logon although it used to work**
+Most likely the folder was moved and the autostart shortcut broke. Delete it and recreate it.
+
+**Double-clicking the launcher does nothing**
+Do step 1 (unblocking) first, then check whether antivirus blocked the `.vbs`.
+You can also run it by hand: open PowerShell from the Start menu, paste the line below and press Enter, and see whether
+anything red appears (the execution policy has to be passed explicitly; right-clicking → "Run with PowerShell" gets blocked by policy):
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File "D:\tools\video-tab-counter\counter.ps1" -Once
 ```
 
-**所有视频都显示「时长未知」**
-先看 `yt-api-key.txt` 是不是变成了 `yt-api-key.txt.txt`；再确认文件里只有那一串字符；
-最后看 `duration-fetch.log`。
+**Every video shows "unknown length"**
+Check whether `yt-api-key.txt` became `yt-api-key.txt.txt`; confirm the file contains nothing but that one string;
+then look at `duration-fetch.log`.
 
-**数字明显不对**
-删掉 `state.json` 重新开始记。
+**The numbers look clearly wrong**
+Delete `state.json` and start counting again.
 
-## 日志怎么看
+## Reading the logs
 
-`counter.log`、`duration-fetch.log` 都在工具文件夹里，双击就用记事本打开了。
-它们很小（几十 KB 以内），删了会自动重建。
+`counter.log` and `duration-fetch.log` sit in the tool folder; double-clicking opens them in Notepad.
+They are small (tens of KB at most) and are recreated if you delete them.
 
-正常运行时 `counter.log` 基本是空的或者只有几行；如果里面有 `skipped a round` 这类字样，
-说明某几次没读到 Chrome 标签栏，那几次的变化会漏记，把日志留着我来看。
-日志是空的又确实有问题，就走上面的常见故障对照。
+In normal operation `counter.log` is empty or has a few lines. If it contains something like `skipped a round`,
+it means Chrome's tab strip could not be read on those passes and changes during them were missed — keep the log so it can be looked at.
+If the log is empty and something is still wrong, work through the troubleshooting section above.
 
-## 怎么删干净
+## Uninstalling completely
 
-1. 右键托盘图标 → 退出。
-   这一步别省。实测不退也能把文件夹删掉，但那个进程还在后台跑，
-   而且每隔几秒就找不到文件报一次错，你还得再去任务管理器结束它。先退出省事。
-2. 确认真的退干净：按 `Ctrl+Shift+Esc` 打开任务管理器，切到「详细信息」标签，
-   右键列标题 → 选择列 → 勾上「命令行」，找 `powershell.exe`，
-   看命令行里还有没有 `counter.ps1`。没有就算干净。
-   如果文件夹已经删了但进程还在：在任务管理器里结束那个 `powershell.exe`，或者重启一次电脑。
-3. 删掉整个 `video-tab-counter` 文件夹。观看记录和时长缓存也在里面，一起没了。
-4. 删掉「启动」文件夹里那个快捷方式（如果你设过自启）。`Win + R` 输入 `shell:startup` 回车就能打开。
-5. 如果你在「其他系统托盘图标」里动过开关，那里会留一条记录（记的是 PowerShell 这个程序，
-   不是本工具），不用特意清，不影响什么。
-6. 如果你配过 YouTube 密钥，建议顺手去 Google Cloud 把那个密钥删掉或停用，
-   卸载本工具不会动到它。
+1. Right-click the tray icon → Exit.
+   Do not skip this. Deleting the folder while it runs technically works, but the process keeps going in the background,
+   fails to find its files every few seconds, and you would have to kill it from Task Manager anyway.
+2. Confirm it is really gone: press `Ctrl+Shift+Esc` for Task Manager, switch to the *Details* tab, right-click a column header →
+   Select columns → tick *Command line*, find `powershell.exe`, and check whether `counter.ps1` still appears in a command line.
+   If the folder is already deleted but the process is still there: end that `powershell.exe` in Task Manager, or reboot.
+3. Delete the whole `video-tab-counter` folder. Your watch history and duration cache live inside it and go with it.
+4. Delete the Startup shortcut if you created one. `Win + R`, type `shell:startup`, press Enter.
+5. If you toggled it in "Other system tray icons", a record stays there (it records the PowerShell program, not this tool).
+   No need to clean it up; it does nothing.
+6. If you configured a YouTube key, consider deleting or disabling it in Google Cloud. Uninstalling this tool does not touch it.
 
-除此之外没改过系统别的东西：没有系统服务，没有安装程序，注册表里也只有上面第 5 条那个托盘开关记录。
+Nothing else on the system was changed: no services, no installer, and the only registry trace is the tray toggle from step 5.
 
-## 怎么更新
+## Updating
 
-这个文件夹就是全部，没有自动更新。你自己留着新版本的话：
-先右键托盘图标退出，用新版本覆盖整个文件夹，再双击启动器。
-`state.json` 和 `durations.json` 留着，历史和时长缓存都不会丢。
+This folder is everything; there is no auto-update. If you keep a newer version: right-click the tray icon → Exit,
+overwrite the whole folder with the new version, and double-click the launcher again.
+Keep `state.json` and `durations.json` and no history or cached length is lost.
 
-版本号在 README 第一行标题下面，也在 `counter.ps1` 开头的注释里
-（看注释要用记事本打开，直接双击 `.ps1` 会运行它）。
+The version number is under the title of this README, and in the comment at the top of `counter.ps1`
+(open it in Notepad — double-clicking a `.ps1` runs it).
 
-## 已知的小毛病
+## Known rough edges
 
-- 只统计一个 Chrome 窗口。同时开多个 Chrome 窗口时，只有主窗口里的标签会被数到。
-- Chrome 启动之后新打开的纯列表页或频道页，可能被当成一个视频标签，
-  「现在开着」会多算一个；这种标签被关掉时「今天看完」也会多记一个。
-- 同一个视频如果标题被 YouTube 改过，会被当成两个。
-- 关掉整个 Chrome（不是关标签，是退出浏览器）不会把开着的标签算成「看完」，
-  程序对这种情况有保护，会保持原状等 Chrome 回来。
+- Only one Chrome window is counted. With several Chrome windows open, only the tabs of the main window are seen.
+- A plain list or channel page opened after Chrome started can be taken for a video tab, so "open right now" may be one too high;
+  when such a tab is closed, "finished today" may also gain one.
+- If YouTube changes a video's title, it is treated as two videos.
+- Closing all of Chrome (quitting the browser, not closing a tab) does not turn the open tabs into "finished";
+  the tool protects against that and keeps its state until Chrome comes back.
 
+## The other two tools in this set
 
-## 文件都是干什么的
+- [Screen-On Time](https://github.com/NutshellLee/screen-time-counter) — how long your screen was on today
+- [LLM Token Counter (DSH)](https://github.com/NutshellLee/dsh-token-counter) — how many tokens this machine's DSH used today
 
-| 文件 | 说明 |
+## Version history
+
+- **1.0** (2026-10-12) — first release: the tray icon shows how many video tabs are open; the details panel lists the finished videos and their lengths for today / yesterday / the last 7 days; the right-click menu has refresh, open folder and exit.
+
+## What each file is
+
+| File | What it is |
 | --- | --- |
-| `counter.ps1` | 主程序 |
-| `start-counter.vbs` | 启动器，双击这个 |
-| `fetch-durations.ps1` | 取时长的帮手，程序自己按需拉起 |
-| `README.md` | 就是本文件 |
-| `AGENTS.md` | 给改代码的 AI 看的，普通使用可以不管 |
-| `NOTES.md` | 做法和踩过的坑，想了解原理可以看 |
-| `LICENSE` | 许可 |
-| `state.json` / `durations.json` / `*.log` | 运行后自动生成，可以随手删 |
+| `counter.ps1` | The main program |
+| `start-counter.vbs` | Launcher — double-click this one |
+| `fetch-durations.ps1` | The helper that fetches lengths; the tool starts it on demand |
+| `README.md` / `README.zh-CN.md` | This document, in English and Chinese |
+| `AGENTS.md` | Notes for AI or developers changing the code; safe to ignore as a user |
+| `NOTES.md` | How it was built and what went wrong along the way, if you like the why |
+| `LICENSE` | License |
+| `state.json` / `durations.json` / `*.log` | Created at runtime; safe to delete |
 
-想改代码，看 [AGENTS.md](AGENTS.md)；想知道这些数**是怎么**从 Chrome 里抠出来的、
-以及中间踩了哪些坑，看 [NOTES.md](NOTES.md)。
+To change the code, read [AGENTS.md](AGENTS.md). To see **how** these numbers are pulled out of Chrome and which
+dead ends were hit on the way, read [NOTES.md](NOTES.md).

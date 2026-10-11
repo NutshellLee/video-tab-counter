@@ -1,5 +1,5 @@
 ﻿# video-tab-counter - Chrome 视频标签页计数器
-# 版本 1.0
+# 版本 1.1
 #
 # 托盘中显示当前打开的视频标签页数量；悬停显示 现在开着 / 今天看完 / 昨天看完。
 #
@@ -20,6 +20,7 @@ param(
   [int]$IntervalSec = 5
 )
 
+$ToolVersion = '1.1'   # 版本号：第二行注释和 README 开头要跟它一致
 $ErrorActionPreference = 'Stop'
 $Root      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $StatePath = Join-Path $Root 'state.json'
@@ -36,22 +37,90 @@ function Write-Log([string]$m) {
   try { Add-Content -Path $LogPath -Value "$(Get-Date -Format o) $m" -Encoding UTF8 } catch {}
 }
 
+# Chrome 会往标签名里塞状态文字（正在出声、吃内存高），顺序和个数都不固定，
+# 所以要反复剥，剥到不再变化为止。只剥状态文字，站点后缀留给调用方。
+function Remove-TitleStatusNoise([string]$t) {
+  if (-not $t) { return $t }
+  $prev = ''
+  $s = $t
+  while ($s -ne $prev) {
+    $prev = $s
+    $s = $s -replace '\s*-\s*audio playing\s*$', ''
+    $s = $s -replace '\s*-\s*high memory usage\s*-\s*[\d.,]+\s*(?:gb|mb|kb|tb)\s*$', ''
+    $s = $s -replace '\s*-\s*[\d.,]+\s*(?:gb|mb|kb|tb)\s*$', ''
+    $s = $s.Trim()
+  }
+  return $s
+}
+
 function Get-RawNorm([string]$title) {
   if (-not $title) { return $null }
   $t = $title -replace '^\(\d+\)\s*', ''
-  $t = $t -replace '\s*-\s*Audio playing\s*$', ''
+  $t = Remove-TitleStatusNoise $t
   $t = ($t -replace '\s+', ' ').Trim()
   if (-not $t) { return $null }
   return $t.ToLowerInvariant()
 }
 
-# 身份键：在原始规范化标题基础上再去掉站点后缀，这样跟按网址回溯出来的标题对得上
+# 身份键：在原始规范化标题基础上再去掉站点后缀，这样跟按网址回溯出来的标题对得上。
+# 站点后缀也可能不止一层，同样反复剥。
 function Get-TitleKey([string]$title) {
   $k = Get-RawNorm $title
   if (-not $k) { return $null }
-  $k = $k -replace '\s*-\s*youtube$', ''
-  $k = $k -replace '_哔哩哔哩_bilibili$', ''
-  return $k.Trim()
+  $prev = ''
+  while ($k -ne $prev) {
+    $prev = $k
+    $k = $k -replace '\s*-\s*youtube\s*$', ''
+    $k = $k -replace '_哔哩哔哩_bilibili\s*$', ''
+    $k = $k.Trim()
+  }
+  return $k
+}
+
+# 把一个已经成型的键（'t:' + 标题）再洗一遍，用于修历史脏键
+function Get-CleanKey([string]$key) {
+  if (-not $key) { return $key }
+  if ($key.StartsWith('t:')) { return 't:' + (Get-TitleKey $key.Substring(2)) }
+  return (Get-TitleKey $key)
+}
+
+# 一次性迁移：把历史里带状态尾巴的脏键改回干净名字。
+# 不改的话，同一个视频会在「编号表」和「看完名单」里对不上，时长查不到，还可能被算成两个。
+function Repair-StateKeys($st) {
+  if ($null -eq $st) { return 0 }
+  $changed = 0
+  foreach ($field in @('ids','titles')) {
+    if (-not $st.PSObject.Properties[$field]) { continue }
+    $new = [pscustomobject]@{}
+    foreach ($p in @($st.$field.PSObject.Properties)) {
+      $ck = Get-CleanKey $p.Name
+      if ($ck -ne $p.Name) { $changed++ }
+      if (-not $new.PSObject.Properties[$ck]) { $new | Add-Member -NotePropertyName $ck -NotePropertyValue $p.Value }
+    }
+    $st.$field = $new
+  }
+  if ($st.PSObject.Properties['open']) {
+    $newOpen = [pscustomobject]@{}
+    foreach ($p in @($st.open.PSObject.Properties)) {
+      $ck = Get-CleanKey $p.Name
+      if ($ck -ne $p.Name) { $changed++ }
+      if (-not $newOpen.PSObject.Properties[$ck]) { $newOpen | Add-Member -NotePropertyName $ck -NotePropertyValue $p.Value }
+    }
+    $st.open = $newOpen
+  }
+  foreach ($field in @('opened','closed')) {
+    if (-not $st.PSObject.Properties[$field]) { continue }
+    foreach ($d in @($st.$field.PSObject.Properties)) {
+      $arr = @()
+      foreach ($k in @($d.Value)) {
+        $ck = Get-CleanKey $k
+        if ($ck -ne $k) { $changed++ }
+        $arr += $ck
+      }
+      $d.Value = @($arr | Sort-Object -Unique)
+    }
+  }
+  return $changed
 }
 
 function Test-VideoUrl([string]$url) {
@@ -1109,6 +1178,19 @@ function Start-DurationFetch {
   } catch { Write-Log "could not start duration fetch: $($_.Exception.Message)" }
 }
 
+# 有人在自己文件夹里放一个 exit-request.txt，就正常退出：先结算存盘、删掉请求文件，再关。
+# 这样以后重启和更新都不用强杀进程（强杀会丢上一次存盘之后的那一段）。
+function Test-ExitRequested {
+  $flag = Join-Path $Root 'exit-request.txt'
+  if (-not (Test-Path $flag)) { return $false }
+  try { Remove-Item $flag -Force -ErrorAction SilentlyContinue } catch {}
+  Write-Log 'exit requested by flag file'
+  $script:Timer.Stop(); Save-State $script:State
+  $script:Ni.Visible = $false; $script:Ni.Dispose()
+  [System.Windows.Forms.Application]::Exit()
+  return $true
+}
+
 function Start-Tray {
   Initialize-WinForms
 
@@ -1132,13 +1214,13 @@ function Start-Tray {
   $miExit = $menu.Items.Add('退出')
   $script:Ni.ContextMenuStrip = $menu
 
-  # 左键单击托盘图标开明细。已经开着就什么都不做——不重开也不收起来，
-  # 免得点一下先收再弹、看着像闪了一下。收起还是靠点面板外或右上角的叉。
+  # 左键单击托盘图标当开关用：点一下开，再点一下关。
+  # （鼠标按在托盘那一片不算「点到面板外」，所以不会被外面的规则先关掉。）
   $script:Ni.Add_MouseClick({
     param($s, $e)
     if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
     try {
-      if ($script:PanelForm -and -not $script:PanelForm.IsDisposed) { return }
+      if ($script:PanelForm -and -not $script:PanelForm.IsDisposed) { $script:PanelForm.Close(); return }
       Update-Tray
       Show-Panel $script:State
     } catch { Write-Log "left click failed: $($_.Exception.Message)" }
@@ -1155,10 +1237,10 @@ function Start-Tray {
 
   $script:Timer = New-Object System.Windows.Forms.Timer
   $script:Timer.Interval = [int]($script:IntervalSec * 1000)
-  $script:Timer.Add_Tick({ Update-Tray })
+  $script:Timer.Add_Tick({ if (Test-ExitRequested) { return }; Update-Tray })
   $script:Timer.Start()
 
-  Write-Log "tray started, interval=$($script:IntervalSec)s"
+  Write-Log "tray started, version=$ToolVersion, interval=$($script:IntervalSec)s"
   Update-Tray
   [System.Windows.Forms.Application]::Run()
   Write-Log 'tray exited'
@@ -1191,6 +1273,11 @@ if ($state.keyVersion -ne $KeyVersion) {
   $state.keyVersion = $KeyVersion
   Write-Log "key version changed -> rebaselined"
 }
+
+# 修历史脏键：Chrome 曾经把「正在出声 / 吃内存高」写进标签名，那些键带着尾巴，
+# 跟看完名单对不上。这里统一洗一遍（只改键名，记录一条不丢）。
+$fixed = Repair-StateKeys $state
+if ($fixed -gt 0) { Write-Log "repaired $fixed dirty title keys" }
 
 # 每次启动留一份上一版的备份。只在这份确实有内容时才覆盖，
 # 免得把好备份冲成空的。

@@ -11,3 +11,5 @@ durations.json
 
 # YouTube Data API 密钥，绝对不要提交
 yt-api-key.txt
+exit-request.txt
+

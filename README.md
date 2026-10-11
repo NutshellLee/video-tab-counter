@@ -18,7 +18,7 @@ This little tool turns that into a single number in the Windows system tray.
 - **One number is enough**: the tray icon shows how many video tabs are open, and hovering gives today's and yesterday's counts and lengths.
 - It reads the tab strip every 5 seconds and uses 100–150 MB of memory.
 
-Version 1.0 ｜ MIT license (see [LICENSE](LICENSE)) ｜ A personal tool; no promise it fits your setup
+Version 1.1 ｜ MIT license (see [LICENSE](LICENSE)) ｜ A personal tool; no promise it fits your setup
 
 ---
 
@@ -39,8 +39,8 @@ Version 1.0 ｜ MIT license (see [LICENSE](LICENSE)) ｜ A personal tool; no pro
 | Open data folder | Opens the folder the tool lives in |
 | Exit | Quits |
 
-A left click on the tray icon also opens the details panel; clicking again while it is already open does nothing
-(it will not flash and pop again). To dismiss it, click outside the panel or hit the × in its top-right corner.
+A left click on the tray icon toggles the details panel: click to open it, click again to close it.
+You can also dismiss it by clicking outside the panel or hitting the × in its top-right corner.
 The right-click menu offers the same actions.
 
 ### The details panel
@@ -262,6 +262,7 @@ The version number is under the title of this README, and in the comment at the 
 
 ## Version history
 
+- **1.1** (2026-10-12) — the tray click is now a toggle: click to open, click again to close. Fixed title cleaning: the status text Chrome appends to tab names (audio playing, high memory usage) is now stripped repeatedly, and 10 dirty keys from the past were repaired at startup.
 - **1.0** (2026-10-12) — first release: the tray icon shows how many video tabs are open; the details panel lists the finished videos and their lengths for today / yesterday / the last 7 days; the right-click menu has refresh, open folder and exit.
 
 ## What each file is

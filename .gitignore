@@ -1,5 +1,7 @@
 # 本机运行状态和记录，都含隐私，不要提交
 state.json
+state.bak.json
+state.json.corrupt-*.json
 counter.log
 duration-fetch.log
 *.log

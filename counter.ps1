@@ -23,9 +23,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $StatePath = Join-Path $Root 'state.json'
+$BakPath   = Join-Path $Root 'state.bak.json'
 $LogPath   = Join-Path $Root 'counter.log'
 $SessDir   = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data\Default\Sessions'
 $KeyVersion = 3
+
+# 一个视频至少要「被看到」这么多秒，离开标签栏时才记一次看完。
+# 低于门槛的当点错处理：点开、发现不对、马上叉掉，不该记一笔。
+$MinWatchSec = 10
 
 function Write-Log([string]$m) {
   try { Add-Content -Path $LogPath -Value "$(Get-Date -Format o) $m" -Encoding UTF8 } catch {}
@@ -291,15 +296,26 @@ function Test-ChromeRunning {
 # ---------------------------------------------------------------- 状态
 
 function Load-State {
-  if (Test-Path $StatePath) {
-    try { return (Get-Content $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch {}
+  if (-not (Test-Path $StatePath)) { return $null }
+  try {
+    return (Get-Content $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json)
+  } catch {
+    # 关键：文件读不出来（被写到一半、被截断）**不等于**第一次运行。
+    # 以前这里静静地返回 null，于是程序当成新装、建一个空的，然后立刻把空的覆盖回去，
+    # 历史就这么整块没了。真发生过。所以现在：留下残骸、大声记一笔。
+    $bad = "$StatePath.corrupt-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+    try { Move-Item -Path $StatePath -Destination $bad -Force } catch {}
+    Write-Log "state unreadable -> kept as $(Split-Path $bad -Leaf); trying the backup: $($_.Exception.Message)"
+    return $null
   }
-  return $null
 }
 
 function Save-State($s) {
+  # 先写临时文件再替换：直接覆盖写的话，进程在写的那一刻被杀掉就会留下半个文件
   $json = $s | ConvertTo-Json -Depth 6 -Compress
-  [System.IO.File]::WriteAllText($StatePath, $json, (New-Object System.Text.UTF8Encoding($false)))
+  $tmp = "$StatePath.tmp"
+  [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+  Move-Item -Path $tmp -Destination $StatePath -Force
 }
 
 function New-State {
@@ -337,13 +353,26 @@ function Step($state, [datetime]$now, $block) {
   $today = Get-DayKey $now
   Ensure-Day $state $today
 
+  # open 的值是「第一次看到这个视频的时间」。老状态里是 $true（没有时间戳），
+  # 那种按「早就看到了」算，免得升级那一刻把真实记录丢掉。
   $prev = @{}
-  if ($state.open) { foreach ($p in $state.open.PSObject.Properties) { $prev[$p.Name] = $true } }
+  if ($state.open) { foreach ($p in $state.open.PSObject.Properties) { $prev[$p.Name] = $p.Value } }
 
   if ($state.seeded) {
     $appeared = @(); $gone = @()
     foreach ($k in $openNow.Keys) { if (-not $prev.ContainsKey($k)) { $appeared += $k } }
-    foreach ($k in $prev.Keys)    { if (-not $openNow.ContainsKey($k)) { $gone += $k } }
+    foreach ($k in $prev.Keys) {
+      if ($openNow.ContainsKey($k)) { continue }
+      # 只被看到一下就没了（点错、马上叉掉）不算看完：停留不到门槛的直接丢掉
+      $seenStamp = [string]$prev[$k]
+      if ($seenStamp -and $seenStamp -ne 'True') {
+        try {
+          $dwell = (New-TimeSpan -Start ([datetime]::Parse($seenStamp)) -End $now).TotalSeconds
+          if ($dwell -lt $MinWatchSec) { continue }
+        } catch {}
+      }
+      $gone += $k
+    }
 
     # 保护：一次性少掉很多，当成浏览器没恢复标签页，不计入
     if ($gone.Count -gt 20 -and $gone.Count -gt ($prev.Count * 0.5)) { $gone = @() }
@@ -361,7 +390,16 @@ function Step($state, [datetime]$now, $block) {
   }
 
   $o = [pscustomobject]@{}
-  foreach ($k in $openNow.Keys) { $o | Add-Member -NotePropertyName $k -NotePropertyValue $true }
+  foreach ($k in $openNow.Keys) {
+    # 值记「第一次看到它的时间」，下次少了它要拿这个算停留了多久。
+    $stamp = $now.ToString('o')
+    if ($prev.ContainsKey($k)) {
+      $stamp = [string]$prev[$k]
+      # 老格式（$true）：当成早就看到了，别从这一轮重新计时
+      if ($stamp -eq 'True' -or -not $stamp) { $stamp = $now.AddSeconds(-$MinWatchSec).ToString('o') }
+    }
+    $o | Add-Member -NotePropertyName $k -NotePropertyValue $stamp
+  }
   $state.open = $o
   $state.seeded = $true
   return $true
@@ -400,7 +438,9 @@ function Get-Durations {
 
 function Format-HM([int]$seconds) {
   if ($seconds -le 0) { return '0分' }
-  $h = [int]($seconds / 3600); $m = [int](($seconds % 3600) / 60)
+  # 必须向下取整：以前写的是 [int]($seconds / 3600)，那是四舍五入，
+  # 1 小时 49 分会显示成「2 小时 49 分」——分钟一到 30 就多算一小时。
+  $h = [int][math]::Floor($seconds / 3600); $m = [int][math]::Floor(($seconds % 3600) / 60)
   if ($h -gt 0) { return "${h}小时${m}分" }
   return "${m}分"
 }
@@ -489,6 +529,10 @@ function Build-DetailText($state, [datetime]$now) {
 # 下面要用 System.Drawing 的类型，先把程序集加载进来（不加载会报找不到类型）
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+# 查鼠标左键此刻是不是按着：用来判断「点到面板外面了」
+Add-Type -Namespace VideoUi -Name Keys -MemberDefinition @'
+[DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
+'@ -ErrorAction SilentlyContinue
 
 $script:UiBg    = [System.Drawing.Color]::FromArgb(255, 249, 250, 251)
 $script:UiText  = [System.Drawing.Color]::FromArgb(255, 28, 32, 38)
@@ -507,6 +551,8 @@ function Get-UiFonts {
     $script:FSub   = New-Object System.Drawing.Font 'Microsoft YaHei UI', 9
     $script:FApp   = New-Object System.Drawing.Font 'Microsoft YaHei UI', 9
     $script:FTiny  = New-Object System.Drawing.Font 'Microsoft YaHei UI', 7.5
+    # 关闭按钮单独一个大字号，原来那个 × 太小，不好点也不好认
+    $script:FClose = New-Object System.Drawing.Font 'Microsoft YaHei UI', 14, ([System.Drawing.FontStyle]::Regular)
   }
 }
 
@@ -527,7 +573,8 @@ function New-RoundRect([single]$x, [single]$y, [single]$w, [single]$h, [single]$
 function Format-Dur([int]$sec) {
   if ($sec -le 0) { return '0 分' }
   if ($sec -lt 60) { return "$sec 秒" }
-  $h = [int]($sec / 3600); $m = [int](($sec % 3600) / 60)
+  # 同样向下取整，不然面板上的小时也会多算一小时
+  $h = [int][math]::Floor($sec / 3600); $m = [int][math]::Floor(($sec % 3600) / 60)
   if ($h -gt 0 -and $m -gt 0) { return "$h 小时 $m 分" }
   if ($h -gt 0) { return "$h 小时" }
   return "$m 分"
@@ -545,20 +592,45 @@ function Limit-Text($g, [string]$t, $font, [int]$maxW) {
 # 面板上一个档期（今天/昨天/近 7 天）要用的数据
 function Get-PanelRange($state, $durMap, [datetime]$now, [int]$rng) {
   if ($rng -eq 2) {
-    $total = 0; $count = 0; $unknown = 0
+    # 近 7 天跟下面那份列表必须同一套口径：同一个视频七天里看过两次也只算一个。
+    # 以前是按天把当天的数加起来，跨天重复的会被算两次，于是出现「共 65 个」而列表只有 61 条。
+    $keys = @()
     for ($i = 0; $i -lt 7; $i++) {
-      $d = Get-DayDuration $state $durMap (Get-DayKey $now.AddDays(-$i))
-      $total += [int]$d.Total; $count += [int]$d.Count; $unknown += [int]$d.Unknown
+      $k = Get-DayKey $now.AddDays(-$i)
+      if ($state.closed.PSObject.Properties[$k]) { $keys += @($state.closed.$k) }
     }
-    return [pscustomobject]@{ Total = $total; Count = $count; Unknown = $unknown; Day = $null }
+    $keys = @($keys | Select-Object -Unique)
+    $total = 0; $unknown = 0
+    foreach ($k in $keys) {
+      $id = $null
+      if ($state.PSObject.Properties['ids'] -and $state.ids.PSObject.Properties[$k]) { $id = [string]$state.ids.$k }
+      if ($id -and $durMap.ContainsKey($id)) { $total += [int]$durMap[$id] } else { $unknown++ }
+    }
+    return [pscustomobject]@{ Total = $total; Count = $keys.Count; Unknown = $unknown; Day = $null }
+  }
+  if ($rng -eq 3) {
+    $n = if ($state.open) { @($state.open.PSObject.Properties).Count } else { 0 }
+    return [pscustomobject]@{ Total = 0; Count = $n; Unknown = 0; Day = $null }
   }
   $day = Get-DayKey $now.AddDays(-$rng)
   $d = Get-DayDuration $state $durMap $day
   return [pscustomobject]@{ Total = [int]$d.Total; Count = [int]$d.Count; Unknown = [int]$d.Unknown; Day = $day }
 }
 
-# 面板上要列的视频（今天/昨天按当天，近 7 天按这七天的）
+# 面板上要列的视频：今天 / 昨天按当天，近 7 天按这七天，现在开着按当前标签栏
 function Get-PanelVideos($state, $durMap, [datetime]$now, [int]$rng) {
+  if ($rng -eq 3) {
+    $openRows = @()
+    foreach ($p in $state.open.PSObject.Properties) {
+      $k = $p.Name
+      $id = $null
+      if ($state.PSObject.Properties['ids'] -and $state.ids.PSObject.Properties[$k]) { $id = [string]$state.ids.$k }
+      $sec = if ($id -and $durMap.ContainsKey($id)) { [int]$durMap[$id] } else { 0 }
+      $ttl = if ($state.PSObject.Properties['titles'] -and $state.titles.PSObject.Properties[$k]) { $state.titles.$k } else { $k }
+      $openRows += [pscustomobject]@{ Title = $ttl; Sec = $sec }
+    }
+    return @($openRows | Sort-Object -Property @{Expression='Sec';Descending=$true}, Title)
+  }
   $keys = @()
   if ($rng -eq 2) {
     for ($i = 0; $i -lt 7; $i++) {
@@ -576,7 +648,44 @@ function Get-PanelVideos($state, $durMap, [datetime]$now, [int]$rng) {
     $sec = if ($id -and $durMap.ContainsKey($id)) { [int]$durMap[$id] } else { 0 }
     [pscustomobject]@{ Title = (Get-DisplayTitle $state $k); Sec = $sec }
   }
-  return @($rows | Sort-Object -Property @{Expression='Sec';Descending=$true}, Title | Select-Object -First 6)
+  return @($rows | Sort-Object -Property @{Expression='Sec';Descending=$true}, Title)
+}
+
+# 面板的版面：哪一段放什么、列表区能放多少行。画的时候和算窗口高度的时候都用它，
+# 免得两边各写一套数字、切个标签就只露出半行。
+function Get-PanelLayout([int]$h, [bool]$withFooter) {
+  $listTop = 158
+  # 底部那排柱子只在「近 7 天」才有，别的栏不给它留位置，省下的高度全给列表
+  $listBottom = if ($withFooter) { $h - 92 } else { $h - 24 }
+  $rowH = 24
+  $maxRows = [int][Math]::Floor(($listBottom - $listTop) / $rowH)
+  if ($maxRows -lt 1) { $maxRows = 1 }
+  return [pscustomobject]@{ listTop = $listTop; listBottom = $listBottom; rowH = $rowH; maxRows = $maxRows }
+}
+
+# 一栏有 n 条时面板该多高：刚好装下这些条；实在太多就顶到屏幕，交给滚动条
+function Get-PanelHeight([int]$n, $wa, [bool]$withFooter) {
+  if ($n -lt 1) { $n = 1 }
+  $pad = if ($withFooter) { 260 } else { 182 }
+  $need = $pad + $n * 24
+  $cap = [Math]::Min(680, ($wa.Height - 60))
+  if ($need -gt $cap) { return $cap }
+  $floor = if ($withFooter) { 320 } else { 240 }
+  if ($need -lt $floor) { return $floor }
+  return $need
+}
+
+# 自绘面板必须开双缓冲，不然定时重画时整块会闪一下。
+# DoubleBuffered 是受保护的属性，直接赋值得反射；用 Control.SetStyle 更稳。
+function Set-PanelDoubleBuffer($form) {
+  try {
+    $styles = [int]([System.Windows.Forms.ControlStyles]::UserPaint)
+    $styles = $styles -bor [int]([System.Windows.Forms.ControlStyles]::AllPaintingInWmPaint)
+    $styles = $styles -bor [int]([System.Windows.Forms.ControlStyles]::OptimizedDoubleBuffer)
+    $styles = $styles -bor [int]([System.Windows.Forms.ControlStyles]::Opaque)
+    $m = [System.Windows.Forms.Control].GetMethod('SetStyle', [System.Reflection.BindingFlags]'NonPublic,Instance')
+    [void]$m.Invoke($form, @([System.Windows.Forms.ControlStyles]$styles, $true))
+  } catch { Write-Log "double buffer unavailable: $($_.Exception.Message)" }
 }
 
 function Draw-Panel($g, [int]$w, [int]$h) {
@@ -594,11 +703,11 @@ function Draw-Panel($g, [int]$w, [int]$h) {
   $bText = New-Object System.Drawing.SolidBrush $script:UiText
   $bMuted = New-Object System.Drawing.SolidBrush $script:UiMuted
 
-  # ---- 顶部三个标签
-  $tabs = @('今天', '昨天', '近 7 天')
+  # ---- 顶部标签（多一栏「现在开着」）
+  $tabs = @('今天', '昨天', '近 7 天', '现在开着')
   $tx = 16
   $script:TabRects = @()
-  for ($i = 0; $i -lt 3; $i++) {
+  for ($i = 0; $i -lt $tabs.Count; $i++) {
     $fnt = if ($i -eq $rng) { $script:FTabB } else { $script:FTab }
     $col = if ($i -eq $rng) { $script:UiWork } else { $script:UiMuted }
     $sz = $g.MeasureString($tabs[$i], $fnt)
@@ -614,29 +723,47 @@ function Draw-Panel($g, [int]$w, [int]$h) {
     $tx += [int]$sz.Width + 18
   }
 
-  # ---- 大字号：看完的总时长
-  $big = Format-Dur $info.Total
+  # ---- 大字号
+  $openN = if ($st.open) { @($st.open.PSObject.Properties).Count } else { 0 }
+  if ($rng -eq 3) {
+    $big = "$openN 个"
+    # 这里不写「不算看完」那类规则说明：界面上只说事实，规则写在文档里
+    $sub = ''
+  } else {
+    $big = Format-Dur $info.Total
+    $sub = "共 $($info.Count) 个"
+    if ($info.Unknown -gt 0) { $sub += "   ·   $($info.Unknown) 个时长未知" }
+  }
   $g.DrawString($big, $script:FTitle, $bText, 14, 44)
   $szBig = $g.MeasureString($big, $script:FTitle)
-  $openN = if ($st.open) { @($st.open.PSObject.Properties).Count } else { 0 }
-  $sub = "共 $($info.Count) 个"
-  if ($info.Unknown -gt 0) { $sub += "   ·   $($info.Unknown) 个时长未知" }
-  $sub += "   ·   现在开着 $openN 个"
   $g.DrawString($sub, $script:FSub, $bMuted, 18, 40 + $szBig.Height)
+  # 右上角只留关闭按钮。既然有了「现在开着」那一栏，这里再写一遍就是重复。
+  $g.DrawString('×', $script:FClose, $bMuted, ($w - 30), 2)
+  $script:PanelCloseRect = [pscustomobject]@{ x = ($w - 40); y = 0; w = 36; h = 34 }
 
-  # ---- 视频列表
-  $g.DrawString('看的视频', $script:FTabB, $bText, 16, 116)
-  $y = 138
+  # ---- 视频列表（装不下就滚动，不再只显示前几个）
   $vids = Get-PanelVideos $st $durMap $now $rng
+  $lay = Get-PanelLayout $h ($rng -eq 2)
+  $maxRows = $lay.maxRows
+  $off = [int]$script:PanelOffset
+  if ($off -gt ($vids.Count - $maxRows)) { $off = [Math]::Max(0, $vids.Count - $maxRows) }
+  if ($off -lt 0) { $off = 0 }
+  $headTxt = if ($rng -eq 3) { '现在开着的视频' } else { '看完的视频' }
+  $g.DrawString($headTxt, $script:FTabB, $bText, 16, 116)
+  $cntTxt = "共 $($vids.Count) 条"
+  $cntW = $g.MeasureString($cntTxt, $script:FTiny).Width
+  $g.DrawString($cntTxt, $script:FTiny, $bMuted, ($w - 16 - $cntW), 120)
+  $y = $lay.listTop
+  $view = @($vids | Select-Object -Skip $off -First $maxRows)
   if ($vids.Count -eq 0) {
     $g.DrawString('（还没有）', $script:FTiny, $bMuted, 16, $y)
   } else {
     $maxV = 1
     foreach ($v in $vids) { if ($v.Sec -gt $maxV) { $maxV = $v.Sec } }
-    foreach ($v in $vids) {
-      $t = Limit-Text $g $v.Title $script:FApp 190
+    foreach ($v in $view) {
+      $t = Limit-Text $g $v.Title $script:FApp ($w - 262)
       $g.DrawString($t, $script:FApp, $bText, 16, $y)
-      $bx = 218; $bw = 118; $bh = 9
+      $bx = $w - 212; $bw = 120; $bh = 9
       $gp = New-RoundRect $bx ($y + 3) $bw $bh 4
       $b = New-Object System.Drawing.SolidBrush $script:UiTrack
       $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
@@ -647,34 +774,77 @@ function Draw-Panel($g, [int]$w, [int]$h) {
         $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
       }
       $durTxt = if ($v.Sec -gt 0) { Format-Dur $v.Sec } else { '时长未知' }
-      $g.DrawString($durTxt, $script:FApp, $bText, ($w - 16 - 70), $y)
-      $y += 24
+      $g.DrawString($durTxt, $script:FApp, $bText, ($w - 26 - 74), $y)
+      $y += $lay.rowH
+    }
+    # 装不下就画一条能拖的滚动条：右边一条轨道，里面一根滑块
+    if ($vids.Count -gt $maxRows) {
+      $trackX = $w - 9
+      $trackY = $lay.listTop
+      $trackH = $maxRows * $lay.rowH - 4
+      $gp = New-RoundRect $trackX $trackY 4 $trackH 2
+      $b = New-Object System.Drawing.SolidBrush $script:UiTrack
+      $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
+      $maxOff = $vids.Count - $maxRows
+      $thumbH = [single]($trackH * $maxRows / $vids.Count)
+      if ($thumbH -lt 28) { $thumbH = 28 }
+      $thumbY = [single]$trackY
+      if ($maxOff -gt 0) { $thumbY = [single]($trackY + ($trackH - $thumbH) * $off / $maxOff) }
+      $gp = New-RoundRect $trackX $thumbY 4 $thumbH 2
+      $b = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 176, 186, 198))
+      $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
+      # 记下几何，给鼠标拖动用
+      $script:PanelScroll = [pscustomobject]@{ x = $trackX; y = $trackY; h = $trackH; thumbY = $thumbY; thumbH = $thumbH; maxOff = $maxOff }
+    } else {
+      $script:PanelScroll = $null
     }
   }
 
-  # ---- 底部：近 7 天每天一根竖条
-  $baseY = $h - 40
-  $dayW = [int](($w - 32) / 7)
-  $vals = @()
-  $maxD = 1
-  for ($i = 6; $i -ge 0; $i--) {
-    $dd = $now.AddDays(-$i)
-    $d = Get-DayDuration $st $durMap (Get-DayKey $dd)
-    $vals += [pscustomobject]@{ d = $dd; v = [int]$d.Total }
-    if ([int]$d.Total -gt $maxD) { $maxD = [int]$d.Total }
-  }
-  $idx = 0
-  foreach ($v in $vals) {
-    $bx = 16 + $idx * $dayW
-    $bh2 = [int](28 * $v.v / $maxD)
-    if ($bh2 -lt 1 -and $v.v -gt 0) { $bh2 = 1 }
-    if ($bh2 -gt 0) {
-      $gp = New-RoundRect ($bx + 6) ($baseY + 24 - $bh2) ($dayW - 14) $bh2 3
-      $b = New-Object System.Drawing.SolidBrush $(if ($idx -eq 6) { $script:UiWork } else { [System.Drawing.Color]::FromArgb(255, 150, 175, 235) })
-      $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
+  # ---- 底部：只有「近 7 天」这一栏画每天一根竖条。
+  # 今天/昨天/现在开着底下不放它：那几栏讲的是当天或此刻，摆一周的柱子只是占地方。
+  # 鼠标停在哪根上，那根高亮，并在它上方写出日期和数字。
+  $script:BarRects = @()
+  if ($rng -eq 2) {
+    $baseY = $h - 40
+    $dayW = [int](($w - 32) / 7)
+    $vals = @()
+    $maxD = 1
+    for ($i = 6; $i -ge 0; $i--) {
+      $dd = $now.AddDays(-$i)
+      $d = Get-DayDuration $st $durMap (Get-DayKey $dd)
+      $vals += [pscustomobject]@{ d = $dd; v = [int]$d.Total }
+      if ([int]$d.Total -gt $maxD) { $maxD = [int]$d.Total }
     }
-    $g.DrawString($v.d.ToString('MM-dd'), $script:FTiny, $bMuted, ($bx + 2), ($baseY + 26))
-    $idx++
+    $idx = 0
+    foreach ($v in $vals) {
+      $bx = 16 + $idx * $dayW
+      $bh2 = [int](28 * $v.v / $maxD)
+      if ($bh2 -lt 1 -and $v.v -gt 0) { $bh2 = 1 }
+      $hot = ([int]$script:PanelBarHover -eq $idx)
+      if ($bh2 -gt 0) {
+        $gp = New-RoundRect ($bx + 6) ($baseY + 24 - $bh2) ($dayW - 14) $bh2 3
+        $bc = if ($hot) { $script:UiFun } elseif ($idx -eq 6) { $script:UiWork } else { [System.Drawing.Color]::FromArgb(255, 150, 175, 235) }
+        $b = New-Object System.Drawing.SolidBrush $bc
+        $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
+      }
+      $bt = New-Object System.Drawing.SolidBrush $(if ($hot) { $script:UiText } else { $script:UiMuted })
+      $g.DrawString($v.d.ToString('MM-dd'), $script:FTiny, $bt, ($bx + 2), ($baseY + 26))
+      $bt.Dispose()
+      $script:BarRects += [pscustomobject]@{ i = $idx; x = $bx; w = $dayW }
+      $idx++
+    }
+    $hv = [int]$script:PanelBarHover
+    if ($hv -ge 0 -and $hv -lt $vals.Count) {
+      $one = $vals[$hv]
+      $htxt = $one.d.ToString('MM-dd') + '  ' + (Format-Dur $one.v)
+      $hb = New-Object System.Drawing.SolidBrush $script:UiText
+      $hw = $g.MeasureString($htxt, $script:FTiny).Width
+      $hx = 16 + $hv * $dayW + ($dayW - $hw) / 2
+      if ($hx -lt 16) { $hx = 16 }
+      if ($hx + $hw -gt ($w - 8)) { $hx = $w - 8 - $hw }
+      $g.DrawString($htxt, $script:FTiny, $hb, [single]$hx, [single]($baseY - 14))
+      $hb.Dispose()
+    }
   }
   $bText.Dispose(); $bMuted.Dispose()
 }
@@ -685,28 +855,99 @@ function Show-Panel($state) {
     if ($script:PanelForm -and -not $script:PanelForm.IsDisposed) { $script:PanelForm.Close() }
     $script:PanelRange = 0
     $script:PanelReady = $false
-    $nRow = @(Get-PanelVideos $state (Get-Durations) (Get-Date) 0).Count
-    if ($nRow -lt 1) { $nRow = 1 }
-    $w = 420
-    $h = 168 + $nRow * 24 + 78
+    $script:PanelOffset = 0
+    $script:PanelDrag = $null
+    $script:PanelScroll = $null
+    $script:PanelBarHover = -1
+    $script:BarRects = @()
+    # 鼠标是不是在面板里按下去的：按住不放拖到面板外时，不能当「点到别处」把面板关掉
+    $script:PanelHold = $false
+    # 高度跟着当前这一栏的条数走，最多占满屏幕：条目少就矮一点、不留一大块空白；
+    # 条目多就顶到屏幕高度，多出来的交给滚动条。
+    $w = 520
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $n0 = @(Get-PanelVideos $state (Get-Durations) (Get-Date) 0).Count
+    if ($n0 -lt 1) { $n0 = 1 }
+    $h = Get-PanelHeight $n0 $wa $false
+    $script:PanelMaxRows = (Get-PanelLayout $h $false).maxRows
     $f = New-Object System.Windows.Forms.Form
+    Set-PanelDoubleBuffer $f
     $f.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
     $f.ShowInTaskbar = $false
     $f.TopMost = $true
     $f.BackColor = $script:UiBg
     $f.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
     $f.ClientSize = New-Object System.Drawing.Size $w, $h
-    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     $f.Location = New-Object System.Drawing.Point (($wa.Right - $w - 10), ($wa.Bottom - $h - 10))
     $f.Add_Paint({ param($s, $e) Draw-Panel $e.Graphics $s.ClientSize.Width $s.ClientSize.Height })
     $f.Add_MouseClick({
       param($s, $e)
+      $cr = $script:PanelCloseRect
+      if ($cr -and $e.X -ge $cr.x -and $e.X -le ($cr.x + $cr.w) -and $e.Y -ge $cr.y -and $e.Y -le ($cr.y + $cr.h)) { $s.Close(); return }
       foreach ($t in $script:TabRects) {
         if ($e.Y -ge 8 -and $e.Y -le 34 -and $e.X -ge $t.x -and $e.X -le ($t.x + $t.w + 8)) {
           $script:PanelRange = $t.i
+          $script:PanelOffset = 0
+          # 换栏目时把窗口调到这一栏需要的高度，别让上一栏的高度卡着新的一栏
+          $n = @(Get-PanelVideos $script:State (Get-Durations) (Get-Date) $t.i).Count
+          $wa2 = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+          $nh = Get-PanelHeight $n $wa2 ($t.i -eq 2)
+          $s.ClientSize = New-Object System.Drawing.Size 520, $nh
+          $s.Location = New-Object System.Drawing.Point (($wa2.Right - 520 - 10), ($wa2.Bottom - $nh - 10))
+          $script:PanelMaxRows = (Get-PanelLayout $nh ($t.i -eq 2)).maxRows
           $s.Invalidate()
           return
         }
+      }
+    })
+    $f.Add_MouseWheel({
+      param($s, $e)
+      $total = @(Get-PanelVideos $script:State (Get-Durations) (Get-Date) ([int]$script:PanelRange)).Count
+      $maxOff = [Math]::Max(0, $total - [int]$script:PanelMaxRows)
+      $newOff = [int]$script:PanelOffset - [int]([Math]::Sign($e.Delta))
+      if ($newOff -lt 0) { $newOff = 0 }
+      if ($newOff -gt $maxOff) { $newOff = $maxOff }
+      if ($newOff -ne [int]$script:PanelOffset) { $script:PanelOffset = $newOff; $s.Invalidate() }
+    })
+    # 滚动条能用鼠标拖：按在滑块上拖，或者点轨道直接跳过去
+    $f.Add_MouseDown({
+      param($s, $e)
+      if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
+      $script:PanelHold = $true
+      $sc = $script:PanelScroll
+      if (-not $sc) { return }
+      if ($e.X -lt ($sc.x - 5) -or $e.X -gt ($sc.x + 12)) { return }
+      if ($e.Y -ge $sc.thumbY -and $e.Y -le ($sc.thumbY + $sc.thumbH)) {
+        $script:PanelDrag = [int]($e.Y - $sc.thumbY)
+      } else {
+        $rel = ($e.Y - $sc.y) / [double]([Math]::Max(1, ($sc.h - $sc.thumbH)))
+        if ($rel -lt 0) { $rel = 0 }
+        if ($rel -gt 1) { $rel = 1 }
+        $script:PanelOffset = [int][Math]::Round($rel * $sc.maxOff)
+        $s.Invalidate()
+      }
+    })
+    $f.Add_MouseUp({ param($s, $e) $script:PanelDrag = $null; $script:PanelHold = $false })
+    $f.Add_MouseLeave({
+      param($s, $e)
+      if ([int]$script:PanelBarHover -ne -1) { $script:PanelBarHover = -1; $s.Invalidate() }
+    })
+    $f.Add_MouseMove({
+      param($s, $e)
+      # 底部柱子：鼠标进来就高亮那一根，并把它的日期和数字写在上面
+      $hot = -1
+      foreach ($br in @($script:BarRects)) {
+        if ($e.Y -ge ($s.ClientSize.Height - 58) -and $e.X -ge $br.x -and $e.X -lt ($br.x + $br.w)) { $hot = [int]$br.i; break }
+      }
+      if ($hot -ne [int]$script:PanelBarHover) { $script:PanelBarHover = $hot; $s.Invalidate() }
+      $sc = $script:PanelScroll
+      if ($null -ne $script:PanelDrag -and $sc) {
+        $rel = (($e.Y - [int]$script:PanelDrag) - $sc.y) / [double]([Math]::Max(1, ($sc.h - $sc.thumbH)))
+        if ($rel -lt 0) { $rel = 0 }
+        if ($rel -gt 1) { $rel = 1 }
+        $newOff = [int][Math]::Round($rel * $sc.maxOff)
+        if ($newOff -ne [int]$script:PanelOffset) { $script:PanelOffset = $newOff; $s.Invalidate() }
+        return
       }
     })
     # 点别处收起来；延迟半秒再武装，免得菜单刚关掉时的那次失焦把它关掉
@@ -716,9 +957,56 @@ function Show-Panel($state) {
       $script:PanelArm.Add_Tick({ $script:PanelArm.Stop(); $script:PanelReady = $true })
       $script:PanelArm.Start()
     })
-    $f.Add_Deactivate({ if ($script:PanelReady -and $script:PanelForm -and -not $script:PanelForm.IsDisposed) { $script:PanelForm.Close() } })
-    $f.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq 'Escape') { $s.Close() } })
+    $f.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq 'Escape' -or $e.KeyCode -eq 'Space') { $s.Close() } })
+    # 关闭方式改掉：**只有点到面板外面才关**。
+    # 以前挂在 Deactivate 上，一切换焦点就关，想截图都来不及。
+    # 这里每 150 毫秒看一眼：鼠标左键按着、并且位置在面板外面，才关。
+    $script:PanelWatch = New-Object System.Windows.Forms.Timer
+    $script:PanelWatch.Interval = 150
+    $script:PanelWatch.Add_Tick({
+      try {
+        if (-not $script:PanelForm -or $script:PanelForm.IsDisposed) { $script:PanelWatch.Stop(); return }
+        $r = $script:PanelForm.RectangleToScreen($script:PanelForm.ClientRectangle)
+        $pos = [System.Windows.Forms.Cursor]::Position
+        $inside = ($pos.X -ge $r.Left -and $pos.X -le $r.Right -and $pos.Y -ge $r.Top -and $pos.Y -le $r.Bottom)
+        # 别的工具后来开了明细面板，就先把我的收起来，只留一个
+        try {
+          $ownerFile = Join-Path $env:TEMP 'dsh-tray-panel.owner'
+          if (Test-Path $ownerFile) {
+            $parts = (Get-Content $ownerFile -Raw -ErrorAction SilentlyContinue).Trim() -split '\|'
+            if ($parts.Count -eq 2 -and $parts[0] -ne 'video-tab-counter') {
+              if ([long]$parts[1] -gt [long]$script:PanelOpenedAt) { $script:PanelForm.Close(); return }
+            }
+          }
+        } catch {}
+        # 面板开着时每 13 次心跳（约 2 秒）核一次内容：变了才重画，没变就不碰屏幕。
+        # 这样既不会看见「每两秒闪一下」，也省掉没必要的重画。
+        $script:PanelTickN = [int]$script:PanelTickN + 1
+        if (($script:PanelTickN % 13) -eq 0) {
+          $pv = @(Get-PanelVideos $script:State (Get-Durations) (Get-Date) ([int]$script:PanelRange))
+          $psig = "$($script:PanelRange)|$($script:PanelOffset)|$($pv.Count)|"
+          foreach ($one in $pv) { $psig += $one.Title + '|' + $one.Sec + ';' }
+          if ($psig -ne [string]$script:PanelSig) { $script:PanelSig = $psig; $script:PanelForm.Invalidate() }
+        }
+        # 任务栏/托盘那一带不算「点到别处」：不然点托盘图标开面板时，按下的那一刻就被
+        # 判成点在面板外，面板先关一次再被点开，看着就是「闪一下又弹出来」。
+        $waNow = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $onTaskbar = ($pos.Y -gt $waNow.Bottom -or $pos.Y -lt $waNow.Top -or $pos.X -gt $waNow.Right -or $pos.X -lt $waNow.Left)
+        $downNow = ([VideoUi.Keys]::GetAsyncKeyState(0x01) -band 0x8000) -ne 0
+        if (-not $downNow) { $script:PanelHold = $false }
+        # 从面板里按下去、拖到面板外再松手，这不算「点了别处」；
+        # 拖滚动条拖到底、手滑出面板边界时，以前就是被这条规则把面板关掉的。
+        if (-not $inside -and -not $onTaskbar -and -not $script:PanelHold -and $downNow) {
+          $script:PanelForm.Close()
+        }
+      } catch {}
+    })
+    $script:PanelWatch.Start()
+    $script:PanelTickN = 0
     $script:PanelForm = $f
+    # 三个工具的明细面板同一时刻只留一个，别在右下角叠成一摞
+    $script:PanelOpenedAt = [DateTime]::UtcNow.Ticks
+    try { [System.IO.File]::WriteAllText((Join-Path $env:TEMP 'dsh-tray-panel.owner'), "video-tab-counter|$($script:PanelOpenedAt)") } catch {}
     $f.Show()
     $f.Activate()
   } catch { Write-Log "panel failed: $($_.Exception.Message) @ line $($_.InvocationInfo.ScriptLineNumber)" }
@@ -844,6 +1132,18 @@ function Start-Tray {
   $miExit = $menu.Items.Add('退出')
   $script:Ni.ContextMenuStrip = $menu
 
+  # 左键单击托盘图标开明细。已经开着就什么都不做——不重开也不收起来，
+  # 免得点一下先收再弹、看着像闪了一下。收起还是靠点面板外或右上角的叉。
+  $script:Ni.Add_MouseClick({
+    param($s, $e)
+    if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
+    try {
+      if ($script:PanelForm -and -not $script:PanelForm.IsDisposed) { return }
+      Update-Tray
+      Show-Panel $script:State
+    } catch { Write-Log "left click failed: $($_.Exception.Message)" }
+  })
+
   $miDetail.Add_Click({ Update-Tray; Show-Panel $script:State })
   $miNow.Add_Click({ $script:Block = Apply-Snapshot $script:State; Update-Tray })
   $miOpen.Add_Click({ Start-Process explorer.exe $Root })
@@ -867,6 +1167,16 @@ function Start-Tray {
 # ---------------------------------------------------------------- 入口
 
 $state = Load-State
+# 状态读不出来时，先试着用上一次的备份救回来（只有真出过事才知道这一步值钱）
+if ($null -eq $state -and (Test-Path $BakPath)) {
+  try {
+    $bak = Get-Content $BakPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($bak -and $bak.PSObject.Properties['closed']) {
+      $state = $bak
+      Write-Log 'state missing or unreadable -> restored from state.bak.json'
+    }
+  } catch { Write-Log "backup unreadable: $($_.Exception.Message)" }
+}
 if ($null -eq $state) { $state = New-State }
 foreach ($f in 'open','opened','closed','titles','ids') {
   if (-not $state.PSObject.Properties[$f]) { $state | Add-Member -NotePropertyName $f -NotePropertyValue ([pscustomobject]@{}) }
@@ -880,6 +1190,12 @@ if ($state.keyVersion -ne $KeyVersion) {
   $state.seeded = $false
   $state.keyVersion = $KeyVersion
   Write-Log "key version changed -> rebaselined"
+}
+
+# 每次启动留一份上一版的备份。只在这份确实有内容时才覆盖，
+# 免得把好备份冲成空的。
+if ((Test-Path $StatePath) -and ((@($state.opened.PSObject.Properties).Count + @($state.closed.PSObject.Properties).Count) -gt 0)) {
+  try { Copy-Item -Path $StatePath -Destination $BakPath -Force } catch { Write-Log "backup failed: $($_.Exception.Message)" }
 }
 
 $block = Apply-Snapshot $state

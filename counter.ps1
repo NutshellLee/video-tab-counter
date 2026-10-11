@@ -483,40 +483,245 @@ function Build-DetailText($state, [datetime]$now) {
   return $sb.ToString()
 }
 
-function Show-Detail($state) {
+# ---------------------------------------------------------------- 面板（自绘）
+# 三个工具共用同一套外观：同一个尺寸、同一套配色、同一种画法。
+
+# 下面要用 System.Drawing 的类型，先把程序集加载进来（不加载会报找不到类型）
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$script:UiBg    = [System.Drawing.Color]::FromArgb(255, 249, 250, 251)
+$script:UiText  = [System.Drawing.Color]::FromArgb(255, 28, 32, 38)
+$script:UiMuted = [System.Drawing.Color]::FromArgb(255, 138, 147, 158)
+$script:UiWork  = [System.Drawing.Color]::FromArgb(255, 45, 108, 223)
+$script:UiFun   = [System.Drawing.Color]::FromArgb(255, 240, 148, 65)
+$script:UiGreen = [System.Drawing.Color]::FromArgb(255, 58, 167, 109)
+$script:UiTrack = [System.Drawing.Color]::FromArgb(255, 232, 236, 241)
+$script:UiLine  = [System.Drawing.Color]::FromArgb(255, 222, 227, 233)
+
+function Get-UiFonts {
+  if (-not $script:FTitle) {
+    $script:FTitle = New-Object System.Drawing.Font 'Microsoft YaHei UI', 21, ([System.Drawing.FontStyle]::Bold)
+    $script:FTab   = New-Object System.Drawing.Font 'Microsoft YaHei UI', 9.5
+    $script:FTabB  = New-Object System.Drawing.Font 'Microsoft YaHei UI', 9.5, ([System.Drawing.FontStyle]::Bold)
+    $script:FSub   = New-Object System.Drawing.Font 'Microsoft YaHei UI', 9
+    $script:FApp   = New-Object System.Drawing.Font 'Microsoft YaHei UI', 9
+    $script:FTiny  = New-Object System.Drawing.Font 'Microsoft YaHei UI', 7.5
+  }
+}
+
+function New-RoundRect([single]$x, [single]$y, [single]$w, [single]$h, [single]$r) {
+  $p = New-Object System.Drawing.Drawing2D.GraphicsPath
+  if ($r -le 0 -or $w -le 0 -or $h -le 0) { $p.AddRectangle((New-Object System.Drawing.RectangleF $x, $y, $w, $h)); return $p }
+  if ($r -gt $h / 2) { $r = $h / 2 }
+  if ($r -gt $w / 2) { $r = $w / 2 }
+  $d = $r * 2
+  $p.AddArc($x, $y, $d, $d, 180, 90)
+  $p.AddArc($x + $w - $d, $y, $d, $d, 270, 90)
+  $p.AddArc($x + $w - $d, $y + $h - $d, $d, $d, 0, 90)
+  $p.AddArc($x, $y + $h - $d, $d, $d, 90, 90)
+  $p.CloseFigure()
+  return $p
+}
+
+function Format-Dur([int]$sec) {
+  if ($sec -le 0) { return '0 分' }
+  if ($sec -lt 60) { return "$sec 秒" }
+  $h = [int]($sec / 3600); $m = [int](($sec % 3600) / 60)
+  if ($h -gt 0 -and $m -gt 0) { return "$h 小时 $m 分" }
+  if ($h -gt 0) { return "$h 小时" }
+  return "$m 分"
+}
+
+# 标题太长就截断加省略号
+function Limit-Text($g, [string]$t, $font, [int]$maxW) {
+  if ([string]::IsNullOrEmpty($t)) { return '' }
+  if ($g.MeasureString($t, $font).Width -le $maxW) { return $t }
+  $s = $t
+  while ($s.Length -gt 1 -and $g.MeasureString(($s + '…'), $font).Width -gt $maxW) { $s = $s.Substring(0, $s.Length - 1) }
+  return $s + '…'
+}
+
+# 面板上一个档期（今天/昨天/近 7 天）要用的数据
+function Get-PanelRange($state, $durMap, [datetime]$now, [int]$rng) {
+  if ($rng -eq 2) {
+    $total = 0; $count = 0; $unknown = 0
+    for ($i = 0; $i -lt 7; $i++) {
+      $d = Get-DayDuration $state $durMap (Get-DayKey $now.AddDays(-$i))
+      $total += [int]$d.Total; $count += [int]$d.Count; $unknown += [int]$d.Unknown
+    }
+    return [pscustomobject]@{ Total = $total; Count = $count; Unknown = $unknown; Day = $null }
+  }
+  $day = Get-DayKey $now.AddDays(-$rng)
+  $d = Get-DayDuration $state $durMap $day
+  return [pscustomobject]@{ Total = [int]$d.Total; Count = [int]$d.Count; Unknown = [int]$d.Unknown; Day = $day }
+}
+
+# 面板上要列的视频（今天/昨天按当天，近 7 天按这七天的）
+function Get-PanelVideos($state, $durMap, [datetime]$now, [int]$rng) {
+  $keys = @()
+  if ($rng -eq 2) {
+    for ($i = 0; $i -lt 7; $i++) {
+      $k = Get-DayKey $now.AddDays(-$i)
+      if ($state.closed.PSObject.Properties[$k]) { $keys += @($state.closed.$k) }
+    }
+    $keys = @($keys | Select-Object -Unique)
+  } else {
+    $k = Get-DayKey $now.AddDays(-$rng)
+    if ($state.closed.PSObject.Properties[$k]) { $keys = @($state.closed.$k) }
+  }
+  $rows = foreach ($k in $keys) {
+    $id = $null
+    if ($state.PSObject.Properties['ids'] -and $state.ids.PSObject.Properties[$k]) { $id = $state.ids.$k }
+    $sec = if ($id -and $durMap.ContainsKey($id)) { [int]$durMap[$id] } else { 0 }
+    [pscustomobject]@{ Title = (Get-DisplayTitle $state $k); Sec = $sec }
+  }
+  return @($rows | Sort-Object -Property @{Expression='Sec';Descending=$true}, Title | Select-Object -First 6)
+}
+
+function Draw-Panel($g, [int]$w, [int]$h) {
+  Get-UiFonts
+  $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+  $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+  $g.Clear($script:UiBg)
+
+  $now = Get-Date
+  $st = $script:State
+  $durMap = Get-Durations
+  $rng = [int]$script:PanelRange
+
+  $info = Get-PanelRange $st $durMap $now $rng
+  $bText = New-Object System.Drawing.SolidBrush $script:UiText
+  $bMuted = New-Object System.Drawing.SolidBrush $script:UiMuted
+
+  # ---- 顶部三个标签
+  $tabs = @('今天', '昨天', '近 7 天')
+  $tx = 16
+  $script:TabRects = @()
+  for ($i = 0; $i -lt 3; $i++) {
+    $fnt = if ($i -eq $rng) { $script:FTabB } else { $script:FTab }
+    $col = if ($i -eq $rng) { $script:UiWork } else { $script:UiMuted }
+    $sz = $g.MeasureString($tabs[$i], $fnt)
+    $br = New-Object System.Drawing.SolidBrush $col
+    $g.DrawString($tabs[$i], $fnt, $br, $tx, 12)
+    $br.Dispose()
+    $script:TabRects += [pscustomobject]@{ x = $tx; w = [int]$sz.Width; i = $i }
+    if ($i -eq $rng) {
+      $pen = New-Object System.Drawing.Pen $script:UiWork, 2
+      $g.DrawLine($pen, $tx, 32, $tx + $sz.Width - 2, 32)
+      $pen.Dispose()
+    }
+    $tx += [int]$sz.Width + 18
+  }
+
+  # ---- 大字号：看完的总时长
+  $big = Format-Dur $info.Total
+  $g.DrawString($big, $script:FTitle, $bText, 14, 44)
+  $szBig = $g.MeasureString($big, $script:FTitle)
+  $openN = if ($st.open) { @($st.open.PSObject.Properties).Count } else { 0 }
+  $sub = "共 $($info.Count) 个"
+  if ($info.Unknown -gt 0) { $sub += "   ·   $($info.Unknown) 个时长未知" }
+  $sub += "   ·   现在开着 $openN 个"
+  $g.DrawString($sub, $script:FSub, $bMuted, 18, 40 + $szBig.Height)
+
+  # ---- 视频列表
+  $g.DrawString('看的视频', $script:FTabB, $bText, 16, 116)
+  $y = 138
+  $vids = Get-PanelVideos $st $durMap $now $rng
+  if ($vids.Count -eq 0) {
+    $g.DrawString('（还没有）', $script:FTiny, $bMuted, 16, $y)
+  } else {
+    $maxV = 1
+    foreach ($v in $vids) { if ($v.Sec -gt $maxV) { $maxV = $v.Sec } }
+    foreach ($v in $vids) {
+      $t = Limit-Text $g $v.Title $script:FApp 190
+      $g.DrawString($t, $script:FApp, $bText, 16, $y)
+      $bx = 218; $bw = 118; $bh = 9
+      $gp = New-RoundRect $bx ($y + 3) $bw $bh 4
+      $b = New-Object System.Drawing.SolidBrush $script:UiTrack
+      $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
+      if ($v.Sec -gt 0) {
+        $wv = [single]($bw * $v.Sec / $maxV)
+        $gp = New-RoundRect $bx ($y + 3) $wv $bh 4
+        $b = New-Object System.Drawing.SolidBrush $script:UiWork
+        $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
+      }
+      $durTxt = if ($v.Sec -gt 0) { Format-Dur $v.Sec } else { '时长未知' }
+      $g.DrawString($durTxt, $script:FApp, $bText, ($w - 16 - 70), $y)
+      $y += 24
+    }
+  }
+
+  # ---- 底部：近 7 天每天一根竖条
+  $baseY = $h - 40
+  $dayW = [int](($w - 32) / 7)
+  $vals = @()
+  $maxD = 1
+  for ($i = 6; $i -ge 0; $i--) {
+    $dd = $now.AddDays(-$i)
+    $d = Get-DayDuration $st $durMap (Get-DayKey $dd)
+    $vals += [pscustomobject]@{ d = $dd; v = [int]$d.Total }
+    if ([int]$d.Total -gt $maxD) { $maxD = [int]$d.Total }
+  }
+  $idx = 0
+  foreach ($v in $vals) {
+    $bx = 16 + $idx * $dayW
+    $bh2 = [int](28 * $v.v / $maxD)
+    if ($bh2 -lt 1 -and $v.v -gt 0) { $bh2 = 1 }
+    if ($bh2 -gt 0) {
+      $gp = New-RoundRect ($bx + 6) ($baseY + 24 - $bh2) ($dayW - 14) $bh2 3
+      $b = New-Object System.Drawing.SolidBrush $(if ($idx -eq 6) { $script:UiWork } else { [System.Drawing.Color]::FromArgb(255, 150, 175, 235) })
+      $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
+    }
+    $g.DrawString($v.d.ToString('MM-dd'), $script:FTiny, $bMuted, ($bx + 2), ($baseY + 26))
+    $idx++
+  }
+  $bText.Dispose(); $bMuted.Dispose()
+}
+
+function Show-Panel($state) {
   try {
     Initialize-WinForms
-    if ($script:DetailForm -and -not $script:DetailForm.IsDisposed) { $script:DetailForm.Close() }
-
+    if ($script:PanelForm -and -not $script:PanelForm.IsDisposed) { $script:PanelForm.Close() }
+    $script:PanelRange = 0
+    $script:PanelReady = $false
+    $nRow = @(Get-PanelVideos $state (Get-Durations) (Get-Date) 0).Count
+    if ($nRow -lt 1) { $nRow = 1 }
+    $w = 420
+    $h = 168 + $nRow * 24 + 78
     $f = New-Object System.Windows.Forms.Form
-    $f.Text = '视频标签页明细'
-    $f.Size = New-Object System.Drawing.Size 820, 700
-    $f.StartPosition = 'CenterScreen'
-    $f.MinimizeBox = $false
-    $f.MaximizeBox = $true
-
-    # 纯阅读：用标签而不是文本框，不能输入、不能改，也不会出现光标
-    $panel = New-Object System.Windows.Forms.Panel
-    $panel.Dock = [System.Windows.Forms.DockStyle]::Fill
-    $panel.AutoScroll = $true
-    $panel.BackColor = [System.Drawing.SystemColors]::Window
-
-    $label = New-Object System.Windows.Forms.Label
-    $label.AutoSize = $true
-    $label.UseMnemonic = $false          # 标题里的 & 按原样显示
-    $label.UseCompatibleTextRendering = $false   # 走 GDI/ClearType，中文才清晰
-    $label.Font = New-Object System.Drawing.Font 'Microsoft YaHei UI', 11
-    $label.Location = New-Object System.Drawing.Point 12, 12
-    $label.Text = Build-DetailText $state (Get-Date)
-
-    $panel.Controls.Add($label)
-    $f.Controls.Add($panel)
-    $f.ActiveControl = $null
-    $script:DetailForm = $f
+    $f.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+    $f.ShowInTaskbar = $false
+    $f.TopMost = $true
+    $f.BackColor = $script:UiBg
+    $f.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+    $f.ClientSize = New-Object System.Drawing.Size $w, $h
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $f.Location = New-Object System.Drawing.Point (($wa.Right - $w - 10), ($wa.Bottom - $h - 10))
+    $f.Add_Paint({ param($s, $e) Draw-Panel $e.Graphics $s.ClientSize.Width $s.ClientSize.Height })
+    $f.Add_MouseClick({
+      param($s, $e)
+      foreach ($t in $script:TabRects) {
+        if ($e.Y -ge 8 -and $e.Y -le 34 -and $e.X -ge $t.x -and $e.X -le ($t.x + $t.w + 8)) {
+          $script:PanelRange = $t.i
+          $s.Invalidate()
+          return
+        }
+      }
+    })
+    # 点别处收起来；延迟半秒再武装，免得菜单刚关掉时的那次失焦把它关掉
+    $f.Add_Shown({
+      $script:PanelArm = New-Object System.Windows.Forms.Timer
+      $script:PanelArm.Interval = 500
+      $script:PanelArm.Add_Tick({ $script:PanelArm.Stop(); $script:PanelReady = $true })
+      $script:PanelArm.Start()
+    })
+    $f.Add_Deactivate({ if ($script:PanelReady -and $script:PanelForm -and -not $script:PanelForm.IsDisposed) { $script:PanelForm.Close() } })
+    $f.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq 'Escape') { $s.Close() } })
+    $script:PanelForm = $f
     $f.Show()
-  } catch {
-    Write-Log "detail window failed: $($_.Exception.Message) @ line $($_.InvocationInfo.ScriptLineNumber)"
-  }
+    $f.Activate()
+  } catch { Write-Log "panel failed: $($_.Exception.Message) @ line $($_.InvocationInfo.ScriptLineNumber)" }
 }
 
 function Get-Numbers($state, [datetime]$now) {
@@ -595,6 +800,14 @@ function Initialize-WinForms {
   # 关键：不设成 false 的话，控件走 GDI+ 的 DrawString，中文会发虚、笔画粗细不匀
   try { [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false) } catch {}
   [System.Windows.Forms.Application]::EnableVisualStyles()
+  # 界面里的异常别弹那个吓人的框，写进日志并带上堆栈
+  try {
+    [System.Windows.Forms.Application]::SetUnhandledExceptionMode([System.Windows.Forms.UnhandledExceptionMode]::CatchException)
+    [System.Windows.Forms.Application]::add_ThreadException({
+      param($s, $e)
+      Write-Log "ui exception: $($e.Exception.ToString())"
+    })
+  } catch { Write-Log "install ui exception logger failed: $($_.Exception.Message)" }
   $script:WinFormsReady = $true
 }
 
@@ -631,7 +844,7 @@ function Start-Tray {
   $miExit = $menu.Items.Add('退出')
   $script:Ni.ContextMenuStrip = $menu
 
-  $miDetail.Add_Click({ Update-Tray; Show-Detail $script:State })
+  $miDetail.Add_Click({ Update-Tray; Show-Panel $script:State })
   $miNow.Add_Click({ $script:Block = Apply-Snapshot $script:State; Update-Tray })
   $miOpen.Add_Click({ Start-Process explorer.exe $Root })
   $miExit.Add_Click({
@@ -703,8 +916,9 @@ if ($Detail) {
 if ($ShowDetail) {
   [void](Step $state (Get-Date) $block)
   Save-State $state
-  Show-Detail $state
-  [System.Windows.Forms.Application]::Run($script:DetailForm)
+  $script:State = $state
+  Show-Panel $state
+  [System.Windows.Forms.Application]::Run($script:PanelForm)
   exit 0
 }
 

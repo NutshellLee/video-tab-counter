@@ -2,6 +2,8 @@
 
 **English** ｜ [简体中文](README.zh-CN.md)
 
+A treadmill is compelling because it records numbers — work with no feedback is hard to stick with.
+
 Chrome tells you how many tabs are open right now, but not **how many videos you finished yesterday, or how long they were**.
 This little tool turns that into a single number in the Windows system tray.
 

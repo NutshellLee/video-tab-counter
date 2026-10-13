@@ -1,5 +1,5 @@
 ﻿# video-tab-counter - Chrome 视频标签页计数器
-# 版本 1.1
+# 版本 1.2
 #
 # 托盘中显示当前打开的视频标签页数量；悬停显示 现在开着 / 今天看完 / 昨天看完。
 #
@@ -20,7 +20,7 @@ param(
   [int]$IntervalSec = 5
 )
 
-$ToolVersion = '1.1'   # 版本号：第二行注释和 README 开头要跟它一致
+$ToolVersion = '1.2'   # 版本号：第二行注释和 README 开头要跟它一致
 $ErrorActionPreference = 'Stop'
 $Root      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $StatePath = Join-Path $Root 'state.json'
@@ -31,7 +31,7 @@ $KeyVersion = 3
 
 # 一个视频至少要「被看到」这么多秒，离开标签栏时才记一次看完。
 # 低于门槛的当点错处理：点开、发现不对、马上叉掉，不该记一笔。
-$MinWatchSec = 10
+$MinWatchSec = 15
 
 function Write-Log([string]$m) {
   try { Add-Content -Path $LogPath -Value "$(Get-Date -Format o) $m" -Encoding UTF8 } catch {}
@@ -568,7 +568,7 @@ function Build-DetailText($state, [datetime]$now) {
       $id = $null
       if ($state.PSObject.Properties['ids'] -and $state.ids.PSObject.Properties[$k]) { $id = $state.ids.$k }
       $sec = if ($id -and $durMap.ContainsKey($id)) { [int]$durMap[$id] } else { -1 }
-      [pscustomobject]@{ Title = (Get-DisplayTitle $state $k); Sec = $sec }
+      [pscustomobject]@{ Key = $k; Title = (Get-DisplayTitle $state $k); Sec = $sec }
     }
     $rows = @($rows | Sort-Object -Property @{Expression='Sec';Descending=$true}, Title)
 
@@ -696,7 +696,7 @@ function Get-PanelVideos($state, $durMap, [datetime]$now, [int]$rng) {
       if ($state.PSObject.Properties['ids'] -and $state.ids.PSObject.Properties[$k]) { $id = [string]$state.ids.$k }
       $sec = if ($id -and $durMap.ContainsKey($id)) { [int]$durMap[$id] } else { 0 }
       $ttl = if ($state.PSObject.Properties['titles'] -and $state.titles.PSObject.Properties[$k]) { $state.titles.$k } else { $k }
-      $openRows += [pscustomobject]@{ Title = $ttl; Sec = $sec }
+      $openRows += [pscustomobject]@{ Key = $k; Title = $ttl; Sec = $sec }
     }
     return @($openRows | Sort-Object -Property @{Expression='Sec';Descending=$true}, Title)
   }
@@ -715,9 +715,36 @@ function Get-PanelVideos($state, $durMap, [datetime]$now, [int]$rng) {
     $id = $null
     if ($state.PSObject.Properties['ids'] -and $state.ids.PSObject.Properties[$k]) { $id = $state.ids.$k }
     $sec = if ($id -and $durMap.ContainsKey($id)) { [int]$durMap[$id] } else { 0 }
-    [pscustomobject]@{ Title = (Get-DisplayTitle $state $k); Sec = $sec }
+    [pscustomobject]@{ Key = $k; Title = (Get-DisplayTitle $state $k); Sec = $sec }
   }
   return @($rows | Sort-Object -Property @{Expression='Sec';Descending=$true}, Title)
+}
+
+# 从记录里抹掉一个视频（面板上点它右边的「×」）。误记的、点错被算成看完的，都靠它清掉。
+# 删完立刻存盘：面板上的合计、条数、底部的柱子、托盘提示都是每次现算的，下一次重画就跟着变。
+# 「近 7 天」那一栏是按标题去重的七天合集，删它就等于把这七天里所有同名的都抹掉——
+# 只删当天的话，删完它还在列表里，看着像没生效。
+function Remove-PanelVideo($state, [int]$rng, [string]$key) {
+  if (-not $key) { return 0 }
+  $days = @()
+  if ($rng -eq 2) {
+    for ($i = 0; $i -lt 7; $i++) { $days += (Get-DayKey (Get-Date).AddDays(-$i)) }
+  } else {
+    $days += (Get-DayKey (Get-Date).AddDays(-$rng))
+  }
+  $removed = 0
+  foreach ($d in $days) {
+    if (-not $state.closed.PSObject.Properties[$d]) { continue }
+    $old = @($state.closed.$d)
+    if ($old -notcontains $key) { continue }
+    $state.closed.$d = @($old | Where-Object { $_ -ne $key })
+    $removed++
+  }
+  if ($removed -gt 0) {
+    Save-State $state
+    Write-Log "panel delete: $key (range=$rng, days=$removed)"
+  }
+  return $removed
 }
 
 # 面板的版面：哪一段放什么、列表区能放多少行。画的时候和算窗口高度的时候都用它，
@@ -824,15 +851,19 @@ function Draw-Panel($g, [int]$w, [int]$h) {
   $g.DrawString($cntTxt, $script:FTiny, $bMuted, ($w - 16 - $cntW), 120)
   $y = $lay.listTop
   $view = @($vids | Select-Object -Skip $off -First $maxRows)
+  # 每行右边那个「×」的位置，点它就把这条从记录里抹掉。只给「看完」那几栏画：
+  # 「现在开着」是此刻标签栏的实况、不是记录，删它没有意义。
+  $canDel = ($rng -ne 3)
+  $script:RowDelRects = @()
   if ($vids.Count -eq 0) {
     $g.DrawString('（还没有）', $script:FTiny, $bMuted, 16, $y)
   } else {
     $maxV = 1
     foreach ($v in $vids) { if ($v.Sec -gt $maxV) { $maxV = $v.Sec } }
     foreach ($v in $view) {
-      $t = Limit-Text $g $v.Title $script:FApp ($w - 262)
+      $t = Limit-Text $g $v.Title $script:FApp ($w - 292)
       $g.DrawString($t, $script:FApp, $bText, 16, $y)
-      $bx = $w - 212; $bw = 120; $bh = 9
+      $bx = $w - 242; $bw = 110; $bh = 9
       $gp = New-RoundRect $bx ($y + 3) $bw $bh 4
       $b = New-Object System.Drawing.SolidBrush $script:UiTrack
       $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
@@ -843,7 +874,20 @@ function Draw-Panel($g, [int]$w, [int]$h) {
         $g.FillPath($b, $gp); $b.Dispose(); $gp.Dispose()
       }
       $durTxt = if ($v.Sec -gt 0) { Format-Dur $v.Sec } else { '时长未知' }
-      $g.DrawString($durTxt, $script:FApp, $bText, ($w - 26 - 74), $y)
+      $g.DrawString($durTxt, $script:FApp, $bText, ($w - 52 - 74), $y)
+      if ($canDel) {
+        $dx = $w - 38; $dw = 26; $dh = 22
+        $hotRow = ([string]$script:RowDelKey -eq [string]$v.Key)
+        if ($hotRow) {
+          $gp = New-RoundRect $dx ($y - 1) $dw $dh 4
+          $hb = New-Object System.Drawing.SolidBrush $script:UiTrack
+          $g.FillPath($hb, $gp); $hb.Dispose(); $gp.Dispose()
+        }
+        $cb = New-Object System.Drawing.SolidBrush $(if ($hotRow) { $script:UiFun } else { $script:UiMuted })
+        $g.DrawString('×', $script:FApp, $cb, ($dx + 6), $y)
+        $cb.Dispose()
+        $script:RowDelRects += [pscustomobject]@{ x = $dx; y = $y; w = $dw; h = $dh; key = [string]$v.Key }
+      }
       $y += $lay.rowH
     }
     # 装不下就画一条能拖的滚动条：右边一条轨道，里面一根滑块
@@ -929,6 +973,9 @@ function Show-Panel($state) {
     $script:PanelScroll = $null
     $script:PanelBarHover = -1
     $script:BarRects = @()
+    # 列表里那些「×」的命中区（每次重画时填），以及当前鼠标停在哪一条上
+    $script:RowDelRects = @()
+    $script:RowDelKey = ''
     # 鼠标是不是在面板里按下去的：按住不放拖到面板外时，不能当「点到别处」把面板关掉
     $script:PanelHold = $false
     # 高度跟着当前这一栏的条数走，最多占满屏幕：条目少就矮一点、不留一大块空白；
@@ -951,6 +998,31 @@ function Show-Panel($state) {
     $f.Add_Paint({ param($s, $e) Draw-Panel $e.Graphics $s.ClientSize.Width $s.ClientSize.Height })
     $f.Add_MouseClick({
       param($s, $e)
+      $rngNow = [int]$script:PanelRange
+      if ($rngNow -ne 3) {
+        foreach ($rr in @($script:RowDelRects)) {
+          if ($e.X -ge $rr.x -and $e.X -le ($rr.x + $rr.w) -and $e.Y -ge $rr.y -and $e.Y -le ($rr.y + $rr.h)) {
+            $gone = Remove-PanelVideo $script:State $rngNow $rr.key
+            if ($gone -gt 0) {
+              $script:RowDelKey = ''
+              # 少一条之后窗口该矮一点：跟切标签时一样重算高度，别在底下留一截空白
+              $wa3 = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+              $left = @(Get-PanelVideos $script:State (Get-Durations) (Get-Date) $rngNow).Count
+              $nh3 = Get-PanelHeight $left $wa3 ($rngNow -eq 2)
+              if ($nh3 -ne $s.ClientSize.Height) {
+                $s.ClientSize = New-Object System.Drawing.Size 520, $nh3
+                $s.Location = New-Object System.Drawing.Point (($wa3.Right - 520 - 10), ($wa3.Bottom - $nh3 - 10))
+                $script:PanelMaxRows = (Get-PanelLayout $nh3 ($rngNow -eq 2)).maxRows
+              }
+              $script:PanelSig = ''
+              $s.Invalidate()
+              # 托盘提示和「今天」的数也要跟着变，不然面板删掉了、托盘还挂着旧值
+              Update-Tray
+            }
+            return
+          }
+        }
+      }
       $cr = $script:PanelCloseRect
       if ($cr -and $e.X -ge $cr.x -and $e.X -le ($cr.x + $cr.w) -and $e.Y -ge $cr.y -and $e.Y -le ($cr.y + $cr.h)) { $s.Close(); return }
       foreach ($t in $script:TabRects) {
@@ -999,10 +1071,21 @@ function Show-Panel($state) {
     $f.Add_MouseUp({ param($s, $e) $script:PanelDrag = $null; $script:PanelHold = $false })
     $f.Add_MouseLeave({
       param($s, $e)
-      if ([int]$script:PanelBarHover -ne -1) { $script:PanelBarHover = -1; $s.Invalidate() }
+      $need = $false
+      if ([int]$script:PanelBarHover -ne -1) { $script:PanelBarHover = -1; $need = $true }
+      if ([string]$script:RowDelKey -ne '') { $script:RowDelKey = ''; $need = $true }
+      if ($need) { $s.Invalidate() }
     })
     $f.Add_MouseMove({
       param($s, $e)
+      # 列表每行右边的「×」：鼠标停上去变色，让人知道这里能点
+      $dHot = ''
+      if ([int]$script:PanelRange -ne 3) {
+        foreach ($rr in @($script:RowDelRects)) {
+          if ($e.X -ge $rr.x -and $e.X -le ($rr.x + $rr.w) -and $e.Y -ge $rr.y -and $e.Y -le ($rr.y + $rr.h)) { $dHot = [string]$rr.key; break }
+        }
+      }
+      if ($dHot -ne [string]$script:RowDelKey) { $script:RowDelKey = $dHot; $s.Invalidate() }
       # 底部柱子：鼠标进来就高亮那一根，并把它的日期和数字写在上面
       $hot = -1
       foreach ($br in @($script:BarRects)) {

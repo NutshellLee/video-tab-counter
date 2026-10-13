@@ -20,7 +20,7 @@ This little tool turns that into a single number in the Windows system tray.
 - **One number is enough**: the tray icon shows how many video tabs are open, and hovering gives today's and yesterday's counts and lengths.
 - It reads the tab strip every 5 seconds and uses 100–150 MB of memory.
 
-Version 1.1 ｜ MIT license (see [LICENSE](LICENSE)) ｜ A personal tool; no promise it fits your setup
+Version 1.2 ｜ MIT license (see [LICENSE](LICENSE)) ｜ A personal tool; no promise it fits your setup
 
 ---
 
@@ -54,6 +54,9 @@ It is meant to be read as a picture, not as text:
   shows how many, how many have unknown durations, and how many are open right now.
 - Then the **finished videos** list: one row each, with the title, a bar drawn in proportion to its length, and the length on the right.
   When the list does not fit, a scrollbar appears on the right; the mouse wheel and dragging it both scroll.
+- Every row ends with an **×**. If something was recorded by mistake (you opened it, it should not have counted),
+  one click removes it from the record and the total and count above drop right away, no restart needed.
+  Only Today / Yesterday / Last 7 days have it; "Open right now" is the live tab strip, not the record, so it has none.
 - At the bottom, **Last 7 days** draws one bar per day, its height being that day's total. Only the "Last 7 days" tab
   shows this strip; hovering a bar highlights it and shows the date and length above it.
 
@@ -135,10 +138,10 @@ To make it match the tray dot: right-click the shortcut → Properties → Chang
 
 - A video counts as finished when it *used to be* in the tab strip and is *no longer* there: either you closed the tab,
   or the playlist moved on to the next item.
-- It has to have been **seen for at least 10 seconds** to count once. Opening it, realising it was a misclick and closing it
+- It has to have been **seen for at least 15 seconds** to count once. Opening it, realising it was a misclick and closing it
   immediately does not count.
 - It scans the tab strip every 5 seconds, so "how long it was seen" is measured at that granularity:
-  10 seconds means at least two scans.
+  15 seconds means at least three scans.
 - Which day it counts towards is the moment it **left the tab strip**, not when it was opened.
 - The same video watched twice counts once; the title decides that. Re-watching within one day does not double count,
   and in "Last 7 days" watching it again on another day does not either; its length is counted once too.
@@ -264,6 +267,7 @@ The version number is under the title of this README, and in the comment at the 
 
 ## Version history
 
+- **1.2** (2026-10-13) — every row in the details panel now ends with an × that removes a mis-recorded video; the total and count drop immediately. The "finished" threshold went from 10 to 15 seconds.
 - **1.1** (2026-10-12) — the tray click is now a toggle: click to open, click again to close. Fixed title cleaning: the status text Chrome appends to tab names (audio playing, high memory usage) is now stripped repeatedly, and 10 dirty keys from the past were repaired at startup.
 - **1.0** (2026-10-12) — first release: the tray icon shows how many video tabs are open; the details panel lists the finished videos and their lengths for today / yesterday / the last 7 days; the right-click menu has refresh, open folder and exit.
 

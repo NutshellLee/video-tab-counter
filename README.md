@@ -254,6 +254,7 @@ The version number is under the title of this README, and in the comment at the 
 ## Known rough edges
 
 - Only one Chrome window is counted. With several Chrome windows open, only the tabs of the main window are seen.
+- When there are so many tabs that the tab strip has to scroll, "open right now" undercounts by about a dozen: only the tabs laid out so far are exposed to the program (measured: 175 tabs, 162 counted). Counting every one would need extra Chrome launch flags, which costs the double-click-and-go simplicity, so this stays as is.
 - A plain list or channel page opened after Chrome started can be taken for a video tab, so "open right now" may be one too high;
   when such a tab is closed, "finished today" may also gain one.
 - If YouTube changes a video's title, it is treated as two videos.

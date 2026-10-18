@@ -1112,9 +1112,9 @@ function Show-Panel($state) {
     $f.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq 'Escape' -or $e.KeyCode -eq 'Space') { $s.Close() } })
     # 关闭方式改掉：**只有点到面板外面才关**。
     # 以前挂在 Deactivate 上，一切换焦点就关，想截图都来不及。
-    # 这里每 150 毫秒看一眼：鼠标左键按着、并且位置在面板外面，才关。
+    # 这里每 20 毫秒看一眼：鼠标左键按着、并且位置在面板外面，才关。
     $script:PanelWatch = New-Object System.Windows.Forms.Timer
-    $script:PanelWatch.Interval = 150
+    $script:PanelWatch.Interval = 20
     $script:PanelWatch.Add_Tick({
       try {
         if (-not $script:PanelForm -or $script:PanelForm.IsDisposed) { $script:PanelWatch.Stop(); return }
@@ -1131,10 +1131,10 @@ function Show-Panel($state) {
             }
           }
         } catch {}
-        # 面板开着时每 13 次心跳（约 2 秒）核一次内容：变了才重画，没变就不碰屏幕。
+        # 面板开着时每 100 次心跳（20ms × 100 ≈ 2 秒）核一次内容：变了才重画，没变就不碰屏幕。
         # 这样既不会看见「每两秒闪一下」，也省掉没必要的重画。
         $script:PanelTickN = [int]$script:PanelTickN + 1
-        if (($script:PanelTickN % 13) -eq 0) {
+        if (($script:PanelTickN % 100) -eq 0) {
           $pv = @(Get-PanelVideos $script:State (Get-Durations) (Get-Date) ([int]$script:PanelRange))
           $psig = "$($script:PanelRange)|$($script:PanelOffset)|$($pv.Count)|"
           foreach ($one in $pv) { $psig += $one.Title + '|' + $one.Sec + ';' }

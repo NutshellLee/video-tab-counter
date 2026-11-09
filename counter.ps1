@@ -384,7 +384,18 @@ function Save-State($s) {
   $json = $s | ConvertTo-Json -Depth 6 -Compress
   $tmp = "$StatePath.tmp"
   [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
-  Move-Item -Path $tmp -Destination $StatePath -Force
+  # 原子替换：File.Replace 是 NTFS 上的一次改名，目标要么是旧文件要么是新文件。
+  # Move-Item -Force 是删了再改名，中间有一个目标不存在的窗口，进程倒在那里就留下空字节文件。
+  try {
+    [System.IO.File]::Replace($tmp, $StatePath, $null)
+  } catch {
+    if (Test-Path $StatePath) { Remove-Item $StatePath -Force }
+    [System.IO.File]::Move($tmp, $StatePath)
+  }
+  # 备份十分钟刷一次：文件坏了最多退回十分钟，而不是退回上一次启动（那可能是一天前）
+  if (-not $script:BakAt -or ((Get-Date) - $script:BakAt).TotalMinutes -ge 10) {
+    try { Copy-Item -Path $StatePath -Destination $BakPath -Force; $script:BakAt = Get-Date } catch {}
+  }
 }
 
 function New-State {
